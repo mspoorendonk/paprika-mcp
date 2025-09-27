@@ -197,12 +197,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Changelog
 
-### v1.0.0 (2024-09-27)
+### v1.0.0 (2025-09-27)
 - Initial release
 - Recipe creation, updating, and listing functionality
 - Full and partial update capabilities
-- Comprehensive error handling and logging
-- Integration with Claude Desktop
 
 ---
 
