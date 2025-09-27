@@ -1,5 +1,13 @@
 # Paprika MCP Server
 
+## Demo
+
+### Creating Recipes
+![Creating a recipe with natural language](images/demo-create-recipe.png)
+
+### Recipe Recommendations  
+![Getting recipe recommendations](images/demo-list-recipes.png)
+
 A Model Context Protocol (MCP) server that integrates Paprika Recipe Manager with Claude Desktop, enabling natural language recipe management through AI conversation.
 
 ## Features
