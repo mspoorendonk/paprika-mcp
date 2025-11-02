@@ -20,7 +20,7 @@ Assistant>
 Tool: add_meal_to_plan  
 Arguments:
 - meal: "pasta bolognese" OR meal_ID: 23232
-- date: "2025-11-03" (optional, defaults to next free day)
+- date: "2025-11-03" (optional, defaults to next day that doesn't have a meal of that type yet)
 - type: "dinner" (optional, defaults to dinner)
 
 
@@ -36,7 +36,7 @@ Tool call>
 Tool response>
  result: "Meal removed"
  meal: "Pasta Bolognese"
- meal_ID: 23232
+ meal_ID: "22360F6A6-9CA8-4F52-87EB-F42E51C9307C3232"
  date: 2025-11-03
  type: "dinner"
 
@@ -47,13 +47,13 @@ Tool call>
 Tool response>
  result: "Meal removed"
  meal: "Pasta Bolognese"
- meal_ID: 23232
+ meal_ID: "22360F6A6-9CA8-4F52-87EB-F42E51C9307C3232"
  date: 2025-11-03
  type: "dinner"
 
 Tool: remove_meal_from_plan  
 Arguments:
-- meal: "pasta bolognese" OR meal_ID: 23232 OR date: "2025-11-03" or nothing (in which case the last meal is removed)
+- meal: "pasta bolognese" OR meal_ID: 23232 OR date: "2025-11-03" or nothing (in which case the meal on the latest date in the mealplan is removed)
 - date: "2025-11-03" (optional, defaults to last day with matching meal)
 - type: "dinner" (optional, defaults to dinner)
 
@@ -91,7 +91,8 @@ Tool response>
 - Errors from Paprika API must be shown litterally in the response.
 - Mealplanning example with API access can be found here (it's in Go, but treat it as inspiration) https://github.com/soggycactus/paprika-3-mcp/pull/3/files
 - Date inputs must be forgiving. So yyyy-mm-dd or dd mmm or dd mmmm are all fine. However, just to be sure specify what format is expected in the MCP descriptions.
+- There can only be one meal of a particular type per day. No need to enforce this.
 
-# Future expansion
+# Future expansion (not in scope of this feature)
 We are working towards the situation where the user can say: "Plan a week of meals".
 The agent then lists the meals, sorts them by 'last_prepared' date. Filters by 'summer' or 'winter' depending on the season and then picks and plans a few meals.
