@@ -25,7 +25,7 @@ Arguments:
 
 
 meal can be selected by specifying the title or the UUID.
-matching meal title with the available meals will happen in a fuzzy way with some kind of distance function. If the match is mediocre then say: Did you mean these? and list potential matches. If the match is poor then just say that the recipe is unknown and offer to list all recipies.
+matching meal title with the available meals will happen in a fuzzy way with some kind of distance function. If the match is mediocre then say: "Meal description didn't match an existing recipe. Nothing added to plan. Did you mean one of these?" and list potential matches. If the match is poor then just say that the recipe is unknown and offer to list all recipies.
 
 ## Remove a meal from the mealplan
 
@@ -87,9 +87,22 @@ Tool response>
   - optional meal_type = 'dinner'
 
 
+## Add last_planned to list_recipes
+Enhance the list_recipes by adding a `last_planned` attribute to the returned info. It is the date on which the recipe was last planned. This can be used by the LLM in mealplanning such that recently planned recipes are not repeated too often.
+
+Pseudocode for calculating last_planned for each recipe:
+- fetch all planned meals
+- for each recipe:
+    - loop over all planned meals
+        - if the meal matches the current recipe
+            - save the most recent date as last_planned
+
+Note that last_planned can be empty in which case it doesn't need to be returned.
+
+
 # Nonfunctional requirements
 - Errors from Paprika API must be shown litterally in the response.
-- Mealplanning example with API access can be found here (it's in Go, but treat it as inspiration) https://github.com/soggycactus/paprika-3-mcp/pull/3/files
+- Mealplanning example with API endpoint URLs can be found here (it's in Go, but treat it as inspiration) https://github.com/soggycactus/paprika-3-mcp/blob/5a81214b157d0184aeb9bfdc0762f6bacfe58032/internal/paprika/client.go
 - Date inputs must be forgiving. So yyyy-mm-dd or dd mmm or dd mmmm are all fine. However, just to be sure specify what format is expected in the MCP descriptions.
 - There can only be one meal of a particular type per day. No need to enforce this.
 
