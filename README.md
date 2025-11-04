@@ -8,6 +8,7 @@ A Model Context Protocol (MCP) server that integrates Paprika Recipe Manager wit
 - **Grocery List Management**: Manage grocery lists with support for quantities with units (e.g., "4 kilos", "3 liters")
 - **Smart Quantity Handling**: Add, subtract, and track grocery items with unit-aware quantity management
 - **Multiple Lists**: Support for multiple grocery lists with default list fallback
+- **Meal Planning**: Add, remove, and list meals in your meal plan with flexible date parsing and fuzzy recipe matching
 
 ## Demo
 
@@ -150,9 +151,36 @@ Add 1 kilo of flour to my "baking supplies" grocery list.
 Subtract 2 kilos of sugar from my grocery list.
 ```
 
+### Add a Meal to Meal Plan
+```
+Add pasta bolognese to my meal plan for tomorrow
+```
+
+```
+Add the Spaghetti Carbonara recipe to the meal plan for 15 November
+```
+
+### Remove a Meal from Meal Plan
+```
+Remove pasta bolognese from my meal plan
+```
+
+```
+Remove the meal scheduled for 3 November
+```
+
+### List Meal Plan
+```
+What does my meal plan look like for the next 2 weeks?
+```
+
+```
+Show me all dinners planned for this week
+```
+
 ## Available Tools
 
-### Recipes
+### Recipe Management Tools
 
 | Tool | Description |
 |------|-------------|
@@ -161,7 +189,7 @@ Subtract 2 kilos of sugar from my grocery list.
 | `update_recipe_partial` | Update only specified fields |
 | `list_recipes` | List all recipes with ingredients and details |
 
-### Groceries
+### Grocery List Management Tools
 
 | Tool | Description |
 |------|-------------|
@@ -176,6 +204,14 @@ Subtract 2 kilos of sugar from my grocery list.
 - Quantities with units: `"3 kilos"`, `"4 liters"`, `"-2 kilos"`
 - Automatic unit preservation when adding to existing items
 - Error handling if subtraction would result in negative quantity
+
+### Meal Planning Tools
+
+| Tool | Description |
+|------|-------------|
+| `add_meal_to_plan` | Add a meal to the meal plan with flexible date parsing and fuzzy recipe matching |
+| `remove_meal_from_plan` | Remove a meal from the meal plan (if no arguments provided, removes meal on latest date) |
+| `list_meal_plan` | List meal plan entries with optional filtering by meal type and number of days |
 
 ### Components
 
@@ -241,6 +277,13 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - The MCP community for documentation and examples
 
 ## Changelog
+
+### v1.2.0 (2025-11-04)
+- **Meal Planning**: Complete meal planning functionality
+  - Add meals to meal plan with fuzzy recipe matching
+  - Remove meals from meal plan with flexible date parsing
+  - List meal plan entries with filtering options
+  - Enhanced recipe listing with last_planned dates
 
 ### v1.1.0 (2025-11-01)
 - **Grocery List Management**: Complete grocery list functionality
