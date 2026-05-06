@@ -1,12 +1,19 @@
 # Paprika MCP Python Server
 
-A Model Context Protocol (MCP) server that integrates Paprika Recipe Manager with Claude Desktop, enabling natural language recipe management through AI conversation.
+A Model Context Protocol (MCP) server that integrates Paprika Recipe Manager with agents, enabling natural language recipe management through AI conversation.
+
+Supported agents:
+- Claude desktop
+- Home Assistant
+- Google Antigravity
+- VSCode github copilot
 
 ## Features
 
 - **Recipe Creation**: Create new recipes with natural language descriptions
 - **Recipe Updates**: Full and partial recipe updates while preserving existing data
 - **Recipe Listing**: Browse all recipes with complete ingredient lists and details
+- **Grocery Management**: Add, remove, and list items on your Paprika grocery lists
 
 ## Demo
 
@@ -32,12 +39,13 @@ A Model Context Protocol (MCP) server that integrates Paprika Recipe Manager wit
 git clone https://github.com/sandordaroczi/paprika-mcp-python-server.git
 cd paprika-mcp-python-server
 
-# Create and activate virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Install uv (if you don't have it already)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install dependencies
-pip install -r requirements.txt
+# Create virtual environment and install dependencies using uv
+uv venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+uv pip install -r requirements.txt
 ```
 
 ### 2. Configuration
@@ -75,7 +83,7 @@ Add the MCP server configuration:
 {
   "mcpServers": {
     "paprika": {
-      "command": "/path/to/your/venv/bin/python",
+      "command": "/path/to/your/.venv/bin/python",
       "args": ["/path/to/paprika-mcp-python-server/src/server.py"],
       "env": {
         "PAPRIKA_USERNAME": "your_email@example.com",
@@ -91,6 +99,48 @@ Add the MCP server configuration:
 ### 5. Restart Claude Desktop
 
 Completely quit and restart Claude Desktop for the changes to take effect.
+
+## LAN Deployment (Run as a Network Service)
+
+If you want the MCP server to be centrally accessible by multiple agents across your network (e.g., Home Assistant OS on one machine and Claude Desktop on another), you should run the server using Server-Sent Events (SSE).
+
+### 1. Start the Server in SSE Mode on Linux
+
+Run the server on your dedicated Linux machine, binding to your LAN IP address:
+
+```bash
+# Keep this running, e.g., using systemd or tmux
+python src/server.py --sse --host 0.0.0.0 --port 8000
+```
+
+### 2. Configure Home Assistant (HAOS)
+
+On your separate Home Assistant instance, connect to the remote server by adding the SSE URL to your `configuration.yaml` (or configuring it via the HA MCP UI integration):
+
+```yaml
+mcp:
+  servers:
+    paprika:
+      type: sse
+      url: "http://<linux-machine-ip>:8000/mcp/sse" # Home Assistant supports local HTTP
+```
+
+### 3. Configure Claude Desktop to use the Remote Server
+
+Claude Desktop requires a secure connection (`https://`). To achieve this, you need to expose your local server through an HTTPS reverse proxy (like Caddy, Nginx, Cloudflare Tunnels, or ngrok).
+
+Once you have your HTTPS URL, use a generic SSE-to-stdio bridge (requires Node.js/npx on the Claude machine) to connect:
+
+```json
+{
+  "mcpServers": {
+    "paprika-remote": {
+      "command": "npx",
+      "args": ["-y", "@browserbasehq/mcp-sse-bridge", "https://<your-secure-domain>/mcp/sse"]
+    }
+  }
+}
+```
 
 ## Usage Examples
 
@@ -131,6 +181,13 @@ Update the Spaghetti Carbonara recipe to serve 6 people instead of 4, and add "U
 For the recipe with UID [recipe-uid], just change the prep time to 15 minutes and add salt to the ingredients list.
 ```
 
+### Manage Groceries
+```
+Add chocolate to my grocery list.
+
+Remove choco from my grocery list.
+```
+
 ## Available Tools
 
 | Tool | Description |
@@ -139,6 +196,9 @@ For the recipe with UID [recipe-uid], just change the prep time to 15 minutes an
 | `update_recipe` | Complete recipe update (all fields) |
 | `update_recipe_partial` | Update only specified fields |
 | `list_recipes` | List all recipes with ingredients and details |
+| `get_groceries` | List all grocery items currently on the Paprika grocery list |
+| `add_grocery_item` | Add a new item to the Paprika grocery list |
+| `remove_grocery_item` | Remove an item from the Paprika grocery list by name or ID |
 
 ### Components
 

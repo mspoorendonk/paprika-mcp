@@ -36,6 +36,9 @@ def get_config() -> Config:
     parser.add_argument("--username", help="Paprika account username (email)")
     parser.add_argument("--password", help="Paprika account password")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--sse", action="store_true", help="Run as SSE server (default is stdio)")
+    parser.add_argument("--host", default="0.0.0.0", help="SSE host (default 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=8000, help="SSE port (default 8000)")
 
     args = parser.parse_args()
 

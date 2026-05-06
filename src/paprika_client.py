@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import uuid
+import difflib
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -284,7 +285,7 @@ class PaprikaClient:
 
         # Create multipart form data
         data = aiohttp.FormData()
-        data.add_field("data", gzipped_data, content_type="application/octet-stream")
+        data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
 
         try:
             await self._make_authenticated_request(
@@ -350,7 +351,7 @@ class PaprikaClient:
 
         # Create multipart form data
         data = aiohttp.FormData()
-        data.add_field("data", gzipped_data, content_type="application/octet-stream")
+        data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
 
         try:
             await self._make_authenticated_request(
@@ -404,7 +405,7 @@ class PaprikaClient:
             # Create multipart form data
             data = aiohttp.FormData()
             data.add_field(
-                "data", gzipped_data, content_type="application/octet-stream"
+                "data", gzipped_data, content_type="application/octet-stream", filename="data.gz"
             )
 
             await self._make_authenticated_request(
@@ -472,6 +473,185 @@ class PaprikaClient:
         except Exception as e:
             logger.error(f"Failed to list recipes: {str(e)}")
             raise PaprikaAPIError(f"Failed to list recipes: {str(e)}")
+
+    def _resolve_fuzzy(self, query: str, items: List[Dict[str, Any]], name_key: str = "name", id_key: str = "uid") -> Optional[Dict[str, Any]]:
+        """Resolve a query string to an item using ID, exact name, substring, or fuzzy matching."""
+        if not query:
+            return None
+            
+        # 1. Exact ID match
+        for item in items:
+            if item.get(id_key) == query:
+                return item
+                
+        # 2. Exact name match (case insensitive)
+        query_lower = query.lower()
+        for item in items:
+            if item.get(name_key, "").lower() == query_lower:
+                return item
+                
+        # 3. Substring match
+        for item in items:
+            name_lower = item.get(name_key, "").lower()
+            if query_lower in name_lower or name_lower in query_lower:
+                return item
+                
+        # 4. Fuzzy match
+        best_item = None
+        best_score = 0.0
+        for item in items:
+            name_lower = item.get(name_key, "").lower()
+            score = difflib.SequenceMatcher(None, query_lower, name_lower).ratio()
+            if score > best_score:
+                best_score = score
+                best_item = item
+                
+        if best_score > 0.4:  # reasonable threshold for "choko" ~ "chocolade"
+            return best_item
+            
+        return None
+
+    async def get_grocery_lists(self) -> List[Dict[str, Any]]:
+        """Fetch all grocery lists from Paprika."""
+        try:
+            response = await self._make_authenticated_request("GET", "/sync/grocerylists")
+            return response.get("result", [])
+        except Exception as e:
+            logger.error(f"Failed to list grocery lists: {str(e)}")
+            raise PaprikaAPIError(f"Failed to list grocery lists: {str(e)}")
+
+    async def _resolve_list_uid(self, list_query: Optional[str]) -> str:
+        """Resolve a target list UID by name or ID. Falls back to default list."""
+        lists = await self.get_grocery_lists()
+        
+        if list_query:
+            matched_list = self._resolve_fuzzy(list_query, lists)
+            if matched_list:
+                return matched_list["uid"]
+                
+        # Fall back to default list
+        for lst in lists:
+            if lst.get("is_default"):
+                return lst["uid"]
+                
+        # Fall back to first list if no default is found
+        if lists:
+            return lists[0]["uid"]
+            
+        return self._generate_uuid().lower()
+
+    async def get_groceries(self) -> List[Dict[str, Any]]:
+        """
+        Fetch all groceries from Paprika.
+
+        Returns:
+            List of grocery items
+
+        Raises:
+            PaprikaAPIError: If fetching fails
+        """
+        try:
+            response = await self._make_authenticated_request("GET", "/sync/groceries")
+            groceries = response.get("result", [])
+            logger.info(f"Successfully fetched {len(groceries)} groceries")
+            return groceries
+        except Exception as e:
+            logger.error(f"Failed to list groceries: {str(e)}")
+            raise PaprikaAPIError(f"Failed to list groceries: {str(e)}")
+
+    async def add_grocery_item(
+        self,
+        name: str,
+        ingredient: str,
+        quantity: str = "",
+        instruction: str = "",
+        aisle: str = "",
+        list_name_or_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Add a grocery item to Paprika.
+
+        Args:
+            name: Display name
+            ingredient: Ingredient name
+            quantity: Quantity string
+            instruction: Optional instructions
+            aisle: Optional aisle name
+            list_name_or_id: Target list via Name or UID (uses a default if not provided)
+
+        Returns:
+            The created grocery item
+
+        Raises:
+            PaprikaAPIError: If creation fails
+        """
+        resolved_list_uid = await self._resolve_list_uid(list_name_or_id)
+            
+        uid = self._generate_uuid().lower()
+        
+        grocery_obj = {
+            "uid": uid,
+            "name": name,
+            "ingredient": ingredient,
+            "quantity": quantity,
+            "instruction": instruction,
+            "list_uid": resolved_list_uid,
+            "aisle": aisle,
+            "order_flag": 0,
+            "purchased": False,
+            "recipe_uid": None,
+        }
+        
+        gzipped_data = self._gzip_json([grocery_obj])
+        data = aiohttp.FormData()
+        data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
+
+        try:
+            await self._make_authenticated_request("POST", "/sync/groceries", data=data)
+            logger.info(f"Successfully created grocery: {name}")
+            return grocery_obj
+        except Exception as e:
+            logger.error(f"Failed to create grocery {name}: {str(e)}")
+            raise PaprikaAPIError(f"Failed to create grocery: {str(e)}")
+
+    async def remove_grocery_item(self, item_name_or_id: str, list_name_or_id: Optional[str] = None) -> None:
+        """
+        Remove a grocery item from Paprika by marking it as deleted.
+
+        Args:
+            item_name_or_id: The ID or name of the grocery item to remove
+            list_name_or_id: Target list via Name or UID. If provided, confines search space.
+
+        Raises:
+            PaprikaAPIError: If deletion fails
+        """
+        # To ensure we only send deleted=True and the original item data, we need to fetch it first
+        try:
+            groceries = await self.get_groceries()
+            
+            # If list provided, filter groceries; else only look in the default list
+            target_list_uid = await self._resolve_list_uid(list_name_or_id)
+            if target_list_uid:
+                groceries = [g for g in groceries if g.get("list_uid") == target_list_uid]
+                
+            item = self._resolve_fuzzy(item_name_or_id, groceries, name_key="name", id_key="uid")
+            
+            if not item:
+                raise PaprikaAPIError(f"Grocery '{item_name_or_id}' not found in the target list.")
+                
+            item["deleted"] = True
+            deleted_uid = item["uid"]
+            
+            gzipped_data = self._gzip_json([item])
+            data = aiohttp.FormData()
+            data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
+            
+            await self._make_authenticated_request("POST", "/sync/groceries", data=data)
+            logger.info(f"Successfully deleted grocery: {deleted_uid}")
+            
+        except Exception as e:
+            logger.error(f"Failed to delete grocery {item_name_or_id}: {str(e)}")
+            raise PaprikaAPIError(f"Failed to delete grocery: {str(e)}")
 
     async def close(self):
         """Close the HTTP session."""

@@ -33,3 +33,33 @@ class TestPaprikaClient:
 
             with pytest.raises(PaprikaAPIError):
                 await client.authenticate()
+
+    @pytest.mark.asyncio
+    async def test_get_groceries(self, client):
+        with patch.object(client, "_make_authenticated_request", new_callable=AsyncMock) as mock_req:
+            mock_req.return_value = {"result": [{"uid": "123", "name": "Apple"}]}
+            groceries = await client.get_groceries()
+            assert len(groceries) == 1
+            assert groceries[0]["name"] == "Apple"
+            mock_req.assert_called_once_with("GET", "/sync/groceries")
+
+    @pytest.mark.asyncio
+    async def test_add_grocery_item(self, client):
+        with patch.object(client, "_make_authenticated_request", new_callable=AsyncMock) as mock_req:
+            with patch.object(client, "_resolve_list_uid", new_callable=AsyncMock) as mock_resolve:
+                mock_resolve.return_value = "list-456"
+                mock_req.return_value = {} 
+                result = await client.add_grocery_item(name="Banana", ingredient="Banana")
+                assert result["name"] == "Banana"
+                assert result["list_uid"] == "list-456"
+                assert mock_req.called
+
+    @pytest.mark.asyncio
+    async def test_remove_grocery_item(self, client):
+        with patch.object(client, "get_groceries", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = [{"uid": "123", "name": "Apple", "list_uid": "list-456"}]
+            with patch.object(client, "_make_authenticated_request", new_callable=AsyncMock) as mock_req:
+                with patch.object(client, "_resolve_list_uid", new_callable=AsyncMock) as mock_resolve:
+                    mock_resolve.return_value = None
+                    await client.remove_grocery_item("123")
+                    mock_req.assert_called_once()
