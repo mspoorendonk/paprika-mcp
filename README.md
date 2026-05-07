@@ -196,7 +196,7 @@ Remove choco from my grocery list.
 | `create_recipe` | Create a new recipe with all details |
 | `update_recipe` | Complete recipe update (all fields) |
 | `update_recipe_partial` | Update only specified fields |
-| `list_recipes` | List all recipes with ingredients and details |
+| `list_recipes` | List all recipes with ingredients and details. Served from a hash-validated in-memory cache so repeated calls are fast and stay under Paprika's per-IP rate limit (see `specs.md` → "Recipe cache"). The cache is warmed in the background at server startup. |
 | `get_groceries` | List unchecked grocery items on the Paprika grocery list (set `include_purchased=true` to include checked items) |
 | `add_grocery_item` | Add a new item to the Paprika grocery list |
 | `remove_grocery_item` | Remove an item from Paprika groceries. Searches all lists by default; strict matching (exact UID, exact name, or unambiguous substring). Returns the removed item's name, UID, and list UID. Ambiguous matches return an error listing candidates. |
@@ -218,6 +218,21 @@ pip install pytest pytest-asyncio
 # Run tests
 pytest tests/ -v
 ```
+
+#### Live (read-only) tests against the real Paprika cloud
+
+`tests/test_paprika_live.py` exercises the real Paprika API using credentials
+from `.env`. They are skipped by default and **strictly read-only** — they
+only call `authenticate`, `list_recipes`, `get_groceries`, and
+`get_grocery_lists`; they never create, update, or delete anything.
+
+```bash
+PAPRIKA_LIVE_TESTS=1 pytest tests/test_paprika_live.py -v
+```
+
+Note: Paprika applies aggressive per-IP rate limiting. Running the live suite
+back-to-back may produce transient connection-reset errors; rerun individual
+tests in isolation.
 
 ### Adding New Features
 

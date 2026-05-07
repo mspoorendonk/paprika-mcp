@@ -1,7 +1,9 @@
+import asyncio
 import gzip
 import hashlib
 import json
 import logging
+import random
 import uuid
 import difflib
 from datetime import datetime
@@ -10,6 +12,12 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 logger = logging.getLogger(__name__)
+
+# Concurrency cap and inter-request jitter for refetching individual recipe
+# bodies. Paprika applies aggressive per-IP rate limiting (multi-minute IP
+# blocks for bursty traffic), so the cache refresh fans out gently.
+RECIPE_FETCH_CONCURRENCY = 3
+RECIPE_FETCH_JITTER_SECONDS = 0.05
 
 
 class PaprikaAPIError(Exception):
@@ -43,6 +51,12 @@ class PaprikaClient:
         self.password = password
         self.token: Optional[str] = None
         self.session: Optional[aiohttp.ClientSession] = None
+
+        # Recipe cache (see specs.md "Recipe cache").
+        self._recipe_cache: Dict[str, Dict[str, Any]] = {}
+        self._recipe_index_fingerprint: Optional[str] = None
+        self._cache_lock = asyncio.Lock()
+        self._cache_ready = asyncio.Event()
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create an aiohttp session."""
@@ -429,58 +443,157 @@ class PaprikaClient:
             logger.error(f"Failed to partially update recipe {uid}: {str(e)}")
             raise PaprikaAPIError(f"Failed to partially update recipe: {str(e)}")
 
-    async def list_recipes(self, limit: int = 50) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _fingerprint_index(index: List[Dict[str, Any]]) -> str:
+        """Compute a stable fingerprint over the (uid, hash) pairs of the
+        recipe index. Used as the cheap "did anything change?" signal."""
+        pairs = sorted(
+            (item.get("uid", ""), item.get("hash", "")) for item in index
+        )
+        blob = json.dumps(pairs, sort_keys=True).encode()
+        return hashlib.sha256(blob).hexdigest()
+
+    async def _fetch_recipe_index(self) -> List[Dict[str, Any]]:
+        """Fetch the lightweight `[{uid, hash}, ...]` index of all recipes."""
+        response = await self._make_authenticated_request("GET", "/sync/recipes")
+        return response.get("result", []) or []
+
+    async def _fetch_full_recipe(
+        self, uid: str, semaphore: asyncio.Semaphore
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch a single recipe body, gated by the shared semaphore."""
+        async with semaphore:
+            # Small jitter so we don't hammer the API in lockstep.
+            await asyncio.sleep(random.uniform(0, RECIPE_FETCH_JITTER_SECONDS))
+            try:
+                resp = await self._make_authenticated_request(
+                    "GET", f"/sync/recipe/{uid}/"
+                )
+                return resp.get("result") or None
+            except Exception as e:
+                logger.warning(f"Failed to fetch recipe {uid}: {e}")
+                return None
+
+    async def refresh_recipe_cache(self, force: bool = False) -> int:
+        """Refresh the in-memory recipe cache against the Paprika server.
+
+        Strategy (see specs.md "Recipe cache"):
+          1. GET /sync/recipes (cheap index of {uid, hash}).
+          2. If the index fingerprint matches the cached one and not
+             ``force``, no per-recipe fetches are performed.
+          3. Otherwise diff: drop deleted uids, refetch new or hash-changed
+             uids in parallel under a small concurrency cap.
+
+        Returns the number of recipe bodies (re)fetched in this call.
         """
-        List recipes from Paprika.
+        async with self._cache_lock:
+            try:
+                index = await self._fetch_recipe_index()
+            except Exception as e:
+                logger.error(f"Failed to fetch recipe index: {e}")
+                raise PaprikaAPIError(f"Failed to fetch recipe index: {e}")
 
-        Args:
-            limit: Maximum number of recipes to return
+            fingerprint = self._fingerprint_index(index)
+            if (
+                not force
+                and fingerprint == self._recipe_index_fingerprint
+                and self._cache_ready.is_set()
+            ):
+                logger.debug(
+                    "Recipe cache is up to date (%d recipes)",
+                    len(self._recipe_cache),
+                )
+                return 0
 
-        Returns:
-            List of recipe data
+            remote_uids = {item["uid"]: item.get("hash") for item in index if item.get("uid")}
 
-        Raises:
-            PaprikaAPIError: If listing fails
+            # Drop recipes that disappeared on the server.
+            deleted = set(self._recipe_cache).difference(remote_uids)
+            for uid in deleted:
+                self._recipe_cache.pop(uid, None)
+
+            # Stale = new uid, or hash differs from our cached copy.
+            stale_uids = [
+                uid
+                for uid, remote_hash in remote_uids.items()
+                if force
+                or uid not in self._recipe_cache
+                or self._recipe_cache[uid].get("hash") != remote_hash
+            ]
+
+            fetched = 0
+            if stale_uids:
+                semaphore = asyncio.Semaphore(RECIPE_FETCH_CONCURRENCY)
+                results = await asyncio.gather(
+                    *(self._fetch_full_recipe(uid, semaphore) for uid in stale_uids)
+                )
+                for uid, recipe in zip(stale_uids, results):
+                    if recipe is None:
+                        # Leave any prior cached copy in place; we'll retry next
+                        # refresh. Don't update fingerprint either.
+                        continue
+                    self._recipe_cache[uid] = recipe
+                    fetched += 1
+
+            # Only commit the new fingerprint if every stale recipe was fetched
+            # successfully; otherwise the next call will retry the misses.
+            if fetched == len(stale_uids):
+                self._recipe_index_fingerprint = fingerprint
+
+            self._cache_ready.set()
+            logger.info(
+                "Recipe cache refresh: %d total, %d (re)fetched, %d deleted",
+                len(self._recipe_cache), fetched, len(deleted),
+            )
+            return fetched
+
+    async def warm_up_cache(self) -> None:
+        """Populate the recipe cache from scratch. Intended for startup.
+
+        Logs and swallows errors so a transient Paprika failure does not
+        prevent the MCP server from coming up.
         """
         try:
-            # First get the list of recipe UIDs
-            response = await self._make_authenticated_request("GET", "/sync/recipes")
-            recipe_list = response.get("result", [])
-
-            if not recipe_list:
-                return []
-
-            # Limit the number of recipes to fetch
-            recipe_list = recipe_list[:limit]
-
-            # Fetch full recipe data for each UID
-            recipes = []
-            for recipe_info in recipe_list:
-                uid = recipe_info["uid"]
-
-                try:
-                    recipe_response = await self._make_authenticated_request(
-                        "GET", f"/sync/recipe/{uid}/"
-                    )
-
-                    recipe_data = recipe_response.get("result", {})
-
-                    # Skip recipes in trash
-                    if recipe_data.get("in_trash", False):
-                        continue
-
-                    recipes.append(recipe_data)
-
-                except Exception as e:
-                    logger.warning(f"Failed to fetch recipe {uid}: {str(e)}")
-                    continue
-
-            logger.info(f"Successfully fetched {len(recipes)} recipes")
-            return recipes
-
+            await self.refresh_recipe_cache(force=True)
         except Exception as e:
-            logger.error(f"Failed to list recipes: {str(e)}")
-            raise PaprikaAPIError(f"Failed to list recipes: {str(e)}")
+            logger.warning(f"Initial recipe cache warm-up failed: {e}")
+            # Still mark ready so callers don't block forever; they'll get an
+            # empty list the first time and a real refresh attempt next call.
+            self._cache_ready.set()
+
+    async def list_recipes(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        List recipes from Paprika, served from a hash-validated cache.
+
+        Args:
+            limit: Maximum number of recipes to return.
+
+        Returns:
+            List of recipe data (excluding recipes in trash).
+
+        Raises:
+            PaprikaAPIError: If the lightweight index call fails.
+        """
+        try:
+            await self.refresh_recipe_cache()
+        except PaprikaAPIError:
+            # If the index call itself fails but we have a populated cache,
+            # serve stale data rather than failing the LLM tool call.
+            if not self._recipe_cache:
+                raise
+            logger.warning("Serving recipes from stale cache after refresh failure")
+
+        # Wait once for the very first warm-up if a caller raced the server.
+        if not self._cache_ready.is_set():
+            await self._cache_ready.wait()
+
+        recipes = [
+            r for r in self._recipe_cache.values()
+            if not r.get("in_trash", False)
+        ]
+        # Stable order so LLM output is reproducible.
+        recipes.sort(key=lambda r: (r.get("name") or "").lower())
+        return recipes[:limit]
 
     def _resolve_fuzzy(self, query: str, items: List[Dict[str, Any]], name_key: str = "name", id_key: str = "uid") -> Optional[Dict[str, Any]]:
         """Resolve a query string to an item using ID, exact name, substring, or fuzzy matching."""

@@ -548,8 +548,19 @@ async def main():
 
             @contextlib.asynccontextmanager
             async def lifespan(app):
-                async with session_manager.run():
-                    yield
+                # Kick off the recipe cache warm-up in the background so the
+                # MCP server is ready immediately for non-recipe tools while
+                # the (potentially slow) full-library fetch runs.
+                warmup_task = asyncio.create_task(paprika_client.warm_up_cache())
+                try:
+                    async with session_manager.run():
+                        yield
+                finally:
+                    warmup_task.cancel()
+                    try:
+                        await warmup_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
 
             # Starlette app handles /messages/* (and optionally the
             # base_path-prefixed variant) plus lifespan. Other paths are
@@ -584,6 +595,9 @@ async def main():
 
         # Run the server (default stdio)
         if not use_http:
+            # Warm the recipe cache in the background so list_recipes is fast
+            # on the first call without delaying server startup.
+            asyncio.create_task(paprika_client.warm_up_cache())
             async with stdio_server() as (read_stream, write_stream):
                 await server.run(
                     read_stream,
