@@ -201,6 +201,24 @@ Remove choco from my grocery list.
 | `add_grocery_item` | Add a new item to the Paprika grocery list |
 | `remove_grocery_item` | Remove an item from Paprika groceries. Searches all lists by default; strict matching (exact UID, exact name, or unambiguous substring). Returns the removed item's name, UID, and list UID. Ambiguous matches return an error listing candidates. |
 
+### Error contract
+
+Failures are surfaced via the MCP `isError=true` flag, with a stable category in `structuredContent.code` and a TTS-friendly message in the text content. The LLM should branch on the **code**, not parse the prose. See `specs.md` → "Scenario 9 — Errors the user should hear in plain language" for example dialogues.
+
+| Code | When | Extra fields on `structuredContent` |
+|------|------|--------------------------------------|
+| `paprika_unreachable` | Network failure reaching paprikaapp.com (DNS, TCP, TLS, timeout). | – |
+| `paprika_auth_failed` | Paprika rejected the saved credentials (HTTP 401/403). | – |
+| `paprika_rate_limited` | Paprika is throttling us (HTTP 429/503). `list_recipes` falls back to stale cache when possible and does **not** error. | – |
+| `paprika_error` | Any other unexpected non-2xx Paprika response. The raw body is logged but never returned to the user. | – |
+| `invalid_argument` | Required argument missing or malformed. | `missing: [str]` |
+| `grocery_not_found` | No active grocery item matches the query. | – |
+| `grocery_ambiguous` | Multiple grocery items match. The LLM must ask the user to disambiguate. | `candidates: [{uid, name, list_uid, list_name}]` |
+| `grocery_list_not_found` | The named grocery list doesn't exist. | `available_lists: [str]` |
+| `recipe_not_found` | The given recipe UID doesn't exist (or has been deleted). | – |
+
+User-visible messages never contain UIDs, HTTP status codes, or raw response bodies — those go to the server log only.
+
 ### Components
 
 - **MCP Server** (`src/server.py`): Handles MCP protocol communication and tool routing

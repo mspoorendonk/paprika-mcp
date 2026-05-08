@@ -21,16 +21,81 @@ RECIPE_FETCH_JITTER_SECONDS = 0.05
 
 
 class PaprikaAPIError(Exception):
-    """Custom exception for Paprika API errors."""
+    """Base class for all Paprika MCP errors.
 
-    pass
+    Every subclass carries a stable ``code`` string (see specs.md
+    "Scenario 9 — Errors the user should hear in plain language") that the
+    LLM can branch on, plus a TTS-friendly message in ``str(self)``. Extra
+    structured data (candidate lists, available list names, etc.) is
+    attached as attributes and surfaced to MCP clients via
+    ``structuredContent``.
+    """
+
+    code: str = "paprika_error"
+
+    def __init__(self, message: str, **extra: Any):
+        super().__init__(message)
+        # Anything passed as kwargs becomes part of structuredContent.
+        self.extra: Dict[str, Any] = dict(extra)
+
+
+class PaprikaUnreachableError(PaprikaAPIError):
+    """Network failure reaching paprikaapp.com (DNS, TCP, TLS, timeout)."""
+
+    code = "paprika_unreachable"
+
+
+class PaprikaAuthError(PaprikaAPIError):
+    """Paprika rejected the credentials (401/403)."""
+
+    code = "paprika_auth_failed"
+
+
+class PaprikaRateLimitedError(PaprikaAPIError):
+    """Paprika is throttling us (HTTP 429 or temporary IP block)."""
+
+    code = "paprika_rate_limited"
+
+
+class InvalidArgumentError(PaprikaAPIError):
+    """Caller-supplied arguments are missing or malformed."""
+
+    code = "invalid_argument"
+
+
+class GroceryNotFoundError(PaprikaAPIError):
+    """No grocery item matches the query."""
+
+    code = "grocery_not_found"
+
+
+class GroceryListNotFoundError(PaprikaAPIError):
+    """No grocery list matches the query.
+
+    ``available_lists`` (list[str]) is attached so the assistant can read
+    the user's actual list names aloud.
+    """
+
+    code = "grocery_list_not_found"
+
+
+class RecipeNotFoundError(PaprikaAPIError):
+    """No recipe matches the query / UID."""
+
+    code = "recipe_not_found"
 
 
 class AmbiguousMatchError(PaprikaAPIError):
-    """Raised when multiple grocery items match a query and disambiguation is needed."""
+    """Multiple grocery items match a query; LLM must disambiguate.
+
+    ``candidates`` is a list of ``{uid, name, list_uid, list_name}`` dicts
+    suitable for inclusion in MCP ``structuredContent``.
+    """
+
+    code = "grocery_ambiguous"
 
     def __init__(self, message: str, candidates: List[Dict[str, Any]]):
-        super().__init__(message)
+        super().__init__(message, candidates=candidates)
         self.candidates = candidates
 
 
@@ -74,7 +139,9 @@ class PaprikaClient:
             Authentication token
 
         Raises:
-            PaprikaAPIError: If authentication fails
+            PaprikaAuthError: If credentials are rejected.
+            PaprikaUnreachableError: If the network call fails.
+            PaprikaAPIError: For any other unexpected failure.
         """
         session = await self._get_session()
 
@@ -87,22 +154,52 @@ class PaprikaClient:
                 data=login_data,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             ) as response:
+                if response.status in (401, 403):
+                    raise PaprikaAuthError(
+                        "Paprika rejected my login. The saved username or "
+                        "password is probably wrong."
+                    )
                 if response.status != 200:
-                    raise PaprikaAPIError(f"Login failed with status {response.status}")
+                    body = await response.text()
+                    logger.error(
+                        "Paprika login failed: status=%s body=%s",
+                        response.status, body[:500],
+                    )
+                    raise PaprikaAPIError(
+                        "Paprika returned an unexpected error while signing in."
+                    )
 
-                result = await response.json()
+                try:
+                    result = await response.json()
+                except (json.JSONDecodeError, aiohttp.ContentTypeError) as e:
+                    logger.error("Login response was not valid JSON: %s", e)
+                    raise PaprikaAPIError(
+                        "Paprika sent back an invalid login response."
+                    )
 
                 if "result" not in result or "token" not in result["result"]:
-                    raise PaprikaAPIError("Invalid login response format")
+                    logger.error("Login response missing token: %s", result)
+                    raise PaprikaAuthError(
+                        "Paprika rejected my login. The saved username or "
+                        "password is probably wrong."
+                    )
 
                 self.token = result["result"]["token"]
                 logger.info("Successfully authenticated with Paprika API")
                 return self.token
 
         except aiohttp.ClientError as e:
-            raise PaprikaAPIError(f"Network error during authentication: {str(e)}")
-        except json.JSONDecodeError:
-            raise PaprikaAPIError("Invalid JSON response from login endpoint")
+            logger.error("Network error during authentication: %s", e)
+            raise PaprikaUnreachableError(
+                "I can't reach the Paprika service right now. Please try "
+                "again in a moment."
+            )
+        except asyncio.TimeoutError:
+            logger.error("Timeout during authentication")
+            raise PaprikaUnreachableError(
+                "I can't reach the Paprika service right now. Please try "
+                "again in a moment."
+            )
 
     async def _make_authenticated_request(
         self, method: str, endpoint: str, **kwargs
@@ -119,7 +216,10 @@ class PaprikaClient:
             JSON response data
 
         Raises:
-            PaprikaAPIError: If request fails
+            PaprikaAuthError: If authentication fails (401/403 even after retry).
+            PaprikaRateLimitedError: If Paprika throttles us (429/503).
+            PaprikaUnreachableError: For network-level failures.
+            PaprikaAPIError: For any other non-2xx response.
         """
         if not self.token:
             await self.authenticate()
@@ -128,38 +228,76 @@ class PaprikaClient:
         headers = kwargs.pop("headers", {})
         headers["Authorization"] = f"Bearer {self.token}"
 
+        async def _do_request(req_headers: Dict[str, str]) -> aiohttp.ClientResponse:
+            return await session.request(
+                method, f"{self.BASE_URL}/v2{endpoint}",
+                headers=req_headers, **kwargs,
+            )
+
         try:
-            async with session.request(
-                method, f"{self.BASE_URL}/v2{endpoint}", headers=headers, **kwargs
-            ) as response:
+            async with await _do_request(headers) as response:
+                # Re-auth path: token might be expired.
                 if response.status == 401:
-                    # Token might be expired, re-authenticate
+                    logger.info("Got 401, re-authenticating and retrying")
+                    self.token = None
                     await self.authenticate()
                     headers["Authorization"] = f"Bearer {self.token}"
+                    async with await _do_request(headers) as retry_response:
+                        return await self._parse_response(retry_response, endpoint)
 
-                    async with session.request(
-                        method,
-                        f"{self.BASE_URL}/v2{endpoint}",
-                        headers=headers,
-                        **kwargs,
-                    ) as retry_response:
-                        if retry_response.status != 200:
-                            raise PaprikaAPIError(
-                                f"Request failed with status {retry_response.status}"
-                            )
-
-                        return await retry_response.json()
-
-                elif response.status != 200:
-                    error_text = await response.text()
-                    raise PaprikaAPIError(
-                        f"Request failed with status {response.status}: {error_text}"
-                    )
-
-                return await response.json()
+                return await self._parse_response(response, endpoint)
 
         except aiohttp.ClientError as e:
-            raise PaprikaAPIError(f"Network error: {str(e)}")
+            logger.error("Network error on %s %s: %s", method, endpoint, e)
+            raise PaprikaUnreachableError(
+                "I can't reach the Paprika service right now. Please try "
+                "again in a moment."
+            )
+        except asyncio.TimeoutError:
+            logger.error("Timeout on %s %s", method, endpoint)
+            raise PaprikaUnreachableError(
+                "I can't reach the Paprika service right now. Please try "
+                "again in a moment."
+            )
+
+    async def _parse_response(
+        self, response: aiohttp.ClientResponse, endpoint: str
+    ) -> Dict[str, Any]:
+        """Map an HTTP response to JSON or a typed exception.
+
+        Body content is logged but never returned in the user-visible
+        message — voice agents must not read raw HTML or JSON aloud.
+        """
+        status = response.status
+        if status == 200:
+            try:
+                return await response.json()
+            except (json.JSONDecodeError, aiohttp.ContentTypeError) as e:
+                logger.error("Invalid JSON from %s: %s", endpoint, e)
+                raise PaprikaAPIError(
+                    "Paprika returned an unexpected error. I've logged the "
+                    "details."
+                )
+
+        body = await response.text()
+        logger.error(
+            "Paprika error on %s: status=%s body=%s",
+            endpoint, status, body[:500],
+        )
+
+        if status in (401, 403):
+            raise PaprikaAuthError(
+                "Paprika rejected my login. The saved username or password "
+                "is probably wrong."
+            )
+        if status in (429, 503):
+            raise PaprikaRateLimitedError(
+                "Paprika is rate-limiting us. Please try again in a couple "
+                "of minutes."
+            )
+        raise PaprikaAPIError(
+            "Paprika returned an unexpected error. I've logged the details."
+        )
 
     def _generate_uuid(self) -> str:
         """Generate a new uppercase UUID."""
@@ -309,17 +447,11 @@ class PaprikaClient:
         data = aiohttp.FormData()
         data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
 
-        try:
-            await self._make_authenticated_request(
-                "POST", f"/sync/recipe/{recipe['uid']}/", data=data
-            )
-
-            logger.info(f"Successfully created recipe: {name}")
-            return recipe
-
-        except Exception as e:
-            logger.error(f"Failed to create recipe {name}: {str(e)}")
-            raise PaprikaAPIError(f"Failed to create recipe: {str(e)}")
+        await self._make_authenticated_request(
+            "POST", f"/sync/recipe/{recipe['uid']}/", data=data
+        )
+        logger.info(f"Successfully created recipe: {name}")
+        return recipe
 
     async def update_recipe(
         self,
@@ -375,17 +507,11 @@ class PaprikaClient:
         data = aiohttp.FormData()
         data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
 
-        try:
-            await self._make_authenticated_request(
-                "POST", f"/sync/recipe/{uid}/", data=data
-            )
-
-            logger.info(f"Successfully updated recipe: {name}")
-            return recipe
-
-        except Exception as e:
-            logger.error(f"Failed to update recipe {name}: {str(e)}")
-            raise PaprikaAPIError(f"Failed to update recipe: {str(e)}")
+        await self._make_authenticated_request(
+            "POST", f"/sync/recipe/{uid}/", data=data
+        )
+        logger.info(f"Successfully updated recipe: {name}")
+        return recipe
 
     async def update_recipe_partial(self, uid: str, **kwargs) -> Dict[str, Any]:
         """
@@ -400,48 +526,46 @@ class PaprikaClient:
             Updated recipe data
 
         Raises:
-            PaprikaAPIError: If update fails
+            RecipeNotFoundError: If no recipe exists with the given UID.
+            PaprikaAPIError (and subclasses): On other Paprika failures.
         """
-        try:
-            # First, get the existing recipe
-            response = await self._make_authenticated_request(
-                "GET", f"/sync/recipe/{uid}/"
-            )
-            existing_recipe = response.get("result", {})
+        # First, get the existing recipe
+        response = await self._make_authenticated_request(
+            "GET", f"/sync/recipe/{uid}/"
+        )
+        existing_recipe = response.get("result", {})
 
-            if not existing_recipe:
-                raise PaprikaAPIError(f"Recipe with UID {uid} not found")
-
-            # Update only the provided fields
-            for field, value in kwargs.items():
-                if value is not None and value != "":
-                    existing_recipe[field] = value
-
-            # Recalculate hash and update timestamp
-            existing_recipe["created"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            existing_recipe["hash"] = self._calculate_hash(existing_recipe)
-
-            # Gzip the recipe data
-            gzipped_data = self._gzip_json(existing_recipe)
-
-            # Create multipart form data
-            data = aiohttp.FormData()
-            data.add_field(
-                "data", gzipped_data, content_type="application/octet-stream", filename="data.gz"
+        if not existing_recipe:
+            raise RecipeNotFoundError(
+                "I can't find a recipe with that ID. It may have been deleted."
             )
 
-            await self._make_authenticated_request(
-                "POST", f"/sync/recipe/{uid}/", data=data
-            )
+        # Update only the provided fields
+        for field, value in kwargs.items():
+            if value is not None and value != "":
+                existing_recipe[field] = value
 
-            logger.info(
-                f"Successfully partially updated recipe: {existing_recipe['name']}"
-            )
-            return existing_recipe
+        # Recalculate hash and update timestamp
+        existing_recipe["created"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        existing_recipe["hash"] = self._calculate_hash(existing_recipe)
 
-        except Exception as e:
-            logger.error(f"Failed to partially update recipe {uid}: {str(e)}")
-            raise PaprikaAPIError(f"Failed to partially update recipe: {str(e)}")
+        # Gzip the recipe data
+        gzipped_data = self._gzip_json(existing_recipe)
+
+        # Create multipart form data
+        data = aiohttp.FormData()
+        data.add_field(
+            "data", gzipped_data, content_type="application/octet-stream", filename="data.gz"
+        )
+
+        await self._make_authenticated_request(
+            "POST", f"/sync/recipe/{uid}/", data=data
+        )
+
+        logger.info(
+            f"Successfully partially updated recipe: {existing_recipe['name']}"
+        )
+        return existing_recipe
 
     @staticmethod
     def _fingerprint_index(index: List[Dict[str, Any]]) -> str:
@@ -487,11 +611,10 @@ class PaprikaClient:
         Returns the number of recipe bodies (re)fetched in this call.
         """
         async with self._cache_lock:
-            try:
-                index = await self._fetch_recipe_index()
-            except Exception as e:
-                logger.error(f"Failed to fetch recipe index: {e}")
-                raise PaprikaAPIError(f"Failed to fetch recipe index: {e}")
+            # Let typed PaprikaAPIError subclasses bubble through unchanged
+            # so the caller (list_recipes / warm_up_cache) can decide what
+            # to do (e.g. serve stale cache vs surface a friendly error).
+            index = await self._fetch_recipe_index()
 
             fingerprint = self._fingerprint_index(index)
             if (
@@ -634,12 +757,8 @@ class PaprikaClient:
 
     async def get_grocery_lists(self) -> List[Dict[str, Any]]:
         """Fetch all grocery lists from Paprika."""
-        try:
-            response = await self._make_authenticated_request("GET", "/sync/grocerylists")
-            return response.get("result", [])
-        except Exception as e:
-            logger.error(f"Failed to list grocery lists: {str(e)}")
-            raise PaprikaAPIError(f"Failed to list grocery lists: {str(e)}")
+        response = await self._make_authenticated_request("GET", "/sync/grocerylists")
+        return response.get("result", [])
 
     async def _resolve_list_uid(self, list_query: Optional[str]) -> str:
         """Resolve a target list UID by name or ID. Falls back to default list."""
@@ -667,18 +786,57 @@ class PaprikaClient:
         matched_list = self._resolve_fuzzy(list_query, lists)
         if matched_list:
             return matched_list["uid"]
-        raise PaprikaAPIError(f"List '{list_query}' not found")
+        available = [lst.get("name", "") for lst in lists if lst.get("name")]
+        available_str = ", ".join(available) if available else "none"
+        raise GroceryListNotFoundError(
+            f"You don't have a grocery list called '{list_query}'. "
+            f"Your lists are: {available_str}.",
+            available_lists=available,
+        )
 
-    def _resolve_strict(self, query: str, items: List[Dict[str, Any]], name_key: str = "name", id_key: str = "uid") -> Dict[str, Any]:
+    def _resolve_strict(
+        self,
+        query: str,
+        items: List[Dict[str, Any]],
+        name_key: str = "name",
+        id_key: str = "uid",
+        list_names: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """
         Resolve a query to an item using strict matching only (safe for destructive ops).
-        
+
         Matching order: exact UID → case-insensitive exact name → unambiguous substring.
-        Raises AmbiguousMatchError if multiple items match.
-        Raises PaprikaAPIError if no items match.
+        Raises AmbiguousMatchError if multiple items match (with structured
+        candidates including list names where available).
+        Raises GroceryNotFoundError if no items match.
         """
+        list_names = list_names or {}
+
+        def make_candidates(matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            return [
+                {
+                    "uid": m.get(id_key),
+                    "name": m.get(name_key),
+                    "list_uid": m.get("list_uid"),
+                    "list_name": list_names.get(m.get("list_uid", ""), "unknown list"),
+                }
+                for m in matches
+            ]
+
+        def ambiguous(matches: List[Dict[str, Any]]) -> AmbiguousMatchError:
+            spoken = ", ".join(
+                f"{m.get(name_key)} on {list_names.get(m.get('list_uid', ''), 'unknown list')}"
+                for m in matches
+            )
+            return AmbiguousMatchError(
+                f"Multiple items match '{query}': {spoken}. Which one?",
+                candidates=make_candidates(matches),
+            )
+
         if not query or not items:
-            raise PaprikaAPIError(f"Grocery '{query}' not found.")
+            raise GroceryNotFoundError(
+                f"There's nothing called '{query}' on your active grocery lists."
+            )
 
         # 1. Exact ID match
         for item in items:
@@ -691,10 +849,7 @@ class PaprikaClient:
         if len(exact_matches) == 1:
             return exact_matches[0]
         if len(exact_matches) > 1:
-            msg = f"Multiple items match '{query}'. Please specify by UID:\n"
-            for item in exact_matches:
-                msg += f"- {item.get(name_key)} (UID {item.get(id_key)}) on list {item.get('list_uid', 'unknown')}\n"
-            raise AmbiguousMatchError(msg, exact_matches)
+            raise ambiguous(exact_matches)
 
         # 3. Substring match (query must be at least 3 chars)
         substring_matches = []
@@ -707,12 +862,11 @@ class PaprikaClient:
         if len(substring_matches) == 1:
             return substring_matches[0]
         if len(substring_matches) > 1:
-            msg = f"Multiple items match '{query}'. Please specify by UID:\n"
-            for item in substring_matches:
-                msg += f"- {item.get(name_key)} (UID {item.get(id_key)}) on list {item.get('list_uid', 'unknown')}\n"
-            raise AmbiguousMatchError(msg, substring_matches)
+            raise ambiguous(substring_matches)
 
-        raise PaprikaAPIError(f"Grocery '{query}' not found.")
+        raise GroceryNotFoundError(
+            f"There's nothing called '{query}' on your active grocery lists."
+        )
 
     async def _resolve_list_uid(self, list_query: Optional[str]) -> str:
         """Resolve a target list UID by name or ID. Falls back to default list."""
@@ -750,22 +904,18 @@ class PaprikaClient:
             List of grocery items
 
         Raises:
-            PaprikaAPIError: If fetching fails
+            PaprikaAPIError (and subclasses): If the underlying call fails.
         """
-        try:
-            response = await self._make_authenticated_request("GET", "/sync/groceries")
-            groceries = response.get("result", [])
-            total = len(groceries)
-            if not include_purchased:
-                groceries = [g for g in groceries if not g.get("purchased")]
-            logger.info(
-                f"Successfully fetched {len(groceries)} groceries "
-                f"(filtered from {total}, include_purchased={include_purchased})"
-            )
-            return groceries
-        except Exception as e:
-            logger.error(f"Failed to list groceries: {str(e)}")
-            raise PaprikaAPIError(f"Failed to list groceries: {str(e)}")
+        response = await self._make_authenticated_request("GET", "/sync/groceries")
+        groceries = response.get("result", [])
+        total = len(groceries)
+        if not include_purchased:
+            groceries = [g for g in groceries if not g.get("purchased")]
+        logger.info(
+            f"Successfully fetched {len(groceries)} groceries "
+            f"(filtered from {total}, include_purchased={include_purchased})"
+        )
+        return groceries
 
     async def add_grocery_item(
         self,
@@ -814,64 +964,74 @@ class PaprikaClient:
         data = aiohttp.FormData()
         data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
 
-        try:
-            await self._make_authenticated_request("POST", "/sync/groceries", data=data)
-            logger.info(f"Successfully created grocery: {name}")
-            return grocery_obj
-        except Exception as e:
-            logger.error(f"Failed to create grocery {name}: {str(e)}")
-            raise PaprikaAPIError(f"Failed to create grocery: {str(e)}")
+        await self._make_authenticated_request("POST", "/sync/groceries", data=data)
+        logger.info(f"Successfully created grocery: {name}")
+        return grocery_obj
 
     async def remove_grocery_item(self, item_name_or_id: str, list_name_or_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Remove a grocery item from Paprika by marking it as deleted.
+        "Remove" a grocery item from the active shopping list by marking it as
+        purchased. The item is NOT deleted from Paprika — it stays in the
+        list's history (where the Paprika app shows it under the checked-off
+        section) so the user can un-check it later or re-add it with one tap.
 
-        Searches across all grocery lists by default. If list_name_or_id is
-        provided, confines the search to that list only.
+        This matches what users mean colloquially by "remove this from my
+        shopping list": once they've bought it (or no longer want it on the
+        active list), it should disappear from the unchecked view but not be
+        permanently destroyed.
+
+        By default only unpurchased items are considered for matching, since
+        the active shopping list is what the user is referring to. Searches
+        across all grocery lists unless list_name_or_id is provided.
 
         Uses strict matching (exact UID, exact name, or unambiguous substring)
-        to prevent accidental deletion of the wrong item.
+        to prevent accidentally checking off the wrong item.
 
         Args:
-            item_name_or_id: The ID or name of the grocery item to remove
+            item_name_or_id: The UID or name of the grocery item to mark purchased
             list_name_or_id: Name or UID of list to confine search. If omitted, searches all lists.
 
         Returns:
-            The removed item dict (uid, name, list_uid)
+            The updated item dict (uid, name, list_uid)
 
         Raises:
-            PaprikaAPIError: If item not found, list not found, or deletion fails
-            AmbiguousMatchError: If multiple items match the query
+            GroceryNotFoundError: If no item matches.
+            AmbiguousMatchError: If multiple items match the query.
+            GroceryListNotFoundError: If a specified list doesn't exist.
+            PaprikaAPIError (and subclasses): On other Paprika failures.
         """
-        try:
-            # Search the full list including already-purchased items, since
-            # callers may legitimately want to remove a checked item too.
-            groceries = await self.get_groceries(include_purchased=True)
+        # Only consider items that are still on the active shopping list.
+        # Already-purchased items have effectively already been "removed".
+        groceries = await self.get_groceries(include_purchased=False)
 
-            # Only filter by list when explicitly provided
-            if list_name_or_id:
-                target_list_uid = await self._resolve_list_uid_strict(list_name_or_id)
-                groceries = [g for g in groceries if g.get("list_uid") == target_list_uid]
+        # Only filter by list when explicitly provided
+        if list_name_or_id:
+            target_list_uid = await self._resolve_list_uid_strict(list_name_or_id)
+            groceries = [g for g in groceries if g.get("list_uid") == target_list_uid]
 
-            item = self._resolve_strict(item_name_or_id, groceries, name_key="name", id_key="uid")
+        # Build a uid->list-name map so candidate errors can be spoken aloud
+        # without exposing UIDs to the user.
+        list_names = {
+            lst["uid"]: lst.get("name", "unknown list")
+            for lst in await self.get_grocery_lists()
+        }
+        item = self._resolve_strict(
+            item_name_or_id, groceries,
+            name_key="name", id_key="uid",
+            list_names=list_names,
+        )
 
-            item["deleted"] = True
-            deleted_uid = item["uid"]
+        item["purchased"] = True
+        updated_uid = item["uid"]
 
-            gzipped_data = self._gzip_json([item])
-            data = aiohttp.FormData()
-            data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
+        gzipped_data = self._gzip_json([item])
+        data = aiohttp.FormData()
+        data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
 
-            await self._make_authenticated_request("POST", "/sync/groceries", data=data)
-            logger.info(f"Successfully deleted grocery: {deleted_uid}")
+        await self._make_authenticated_request("POST", "/sync/groceries", data=data)
+        logger.info(f"Marked grocery as purchased: {updated_uid}")
 
-            return {"uid": item["uid"], "name": item["name"], "list_uid": item.get("list_uid", "unknown")}
-
-        except (PaprikaAPIError, AmbiguousMatchError):
-            raise
-        except Exception as e:
-            logger.error(f"Failed to delete grocery {item_name_or_id}: {str(e)}")
-            raise PaprikaAPIError(f"Failed to delete grocery: {str(e)}")
+        return {"uid": item["uid"], "name": item["name"], "list_uid": item.get("list_uid", "unknown")}
 
     async def close(self):
         """Close the HTTP session."""

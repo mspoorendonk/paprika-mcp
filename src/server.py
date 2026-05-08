@@ -5,10 +5,15 @@ from typing import Any
 from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import CallToolResult, TextContent, Tool
 
 from config import get_config
-from paprika_client import PaprikaClient, AmbiguousMatchError
+from paprika_client import (
+    AmbiguousMatchError,
+    InvalidArgumentError,
+    PaprikaAPIError,
+    PaprikaClient,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,18 +22,48 @@ logger = logging.getLogger(__name__)
 server = Server("paprika-mcp-python")
 
 
+def _error_result(exc: PaprikaAPIError, tool_name: str) -> CallToolResult:
+    """Map a typed PaprikaAPIError to a voice-assistant-friendly tool result.
+
+    The MCP `isError=True` flag tells the LLM this was a failure (so it can
+    branch instead of treating the message as success). The stable category
+    code goes in `structuredContent.code`; any extra context the exception
+    carried (candidates, available_lists, ...) is merged in alongside.
+    """
+    structured = {"code": exc.code, **exc.extra}
+    logger.warning("Tool %s returned %s: %s", tool_name, exc.code, exc)
+    return CallToolResult(
+        isError=True,
+        content=[TextContent(type="text", text=str(exc))],
+        structuredContent=structured,
+    )
+
+
+def _require(arguments: dict, *names: str) -> None:
+    """Raise InvalidArgumentError if any of `names` is missing or empty."""
+    missing = [n for n in names if not arguments.get(n)]
+    if missing:
+        if len(missing) == 1:
+            msg = f"I need a {missing[0]} for that."
+        else:
+            msg = f"I'm missing some details: {', '.join(missing)}."
+        raise InvalidArgumentError(msg, missing=missing)
+
+
 async def main():
     """Main entry point for the MCP server."""
     paprika_client = None
     try:
         config = get_config()
 
-        # Initialize Paprika client
+        # Initialize Paprika client. Authentication is lazy: the first tool
+        # call will trigger it. This keeps the MCP server responsive even if
+        # Paprika is temporarily down at startup, and lets us surface a
+        # friendly `paprika_auth_failed` / `paprika_unreachable` error to the
+        # voice assistant instead of crashing.
         paprika_client = PaprikaClient(
             username=config.paprika_username, password=config.paprika_password
         )
-        await paprika_client.authenticate()
-        logger.info("Successfully authenticated with Paprika")
 
         # Define tools
         @server.list_tools()
@@ -270,7 +305,7 @@ async def main():
                 ),
                 Tool(
                     name="remove_grocery_item",
-                    description="Remove a grocery item from Paprika. Searches across all the user's grocery lists by default. Pass `list_name_or_id` to confine the search. The matcher is conservative for safety: it requires an exact UID, case-insensitive exact name, or unambiguous substring match. If multiple items match, the call returns an error listing candidates so you can disambiguate by UID.",
+                    description="Remove a grocery item from the active shopping list by marking it as purchased (checked off). The item is NOT permanently deleted from Paprika — it stays in the list's purchased/history section so the user can un-check or re-add it later. This is what users mean by \"remove from my shopping list\". Only currently-unpurchased items are considered for matching. Searches across all the user's grocery lists by default; pass `list_name_or_id` to confine the search. The matcher is conservative for safety: it requires an exact UID, case-insensitive exact name, or unambiguous substring match. If multiple items match, the call returns an error listing candidates so you can disambiguate by UID.",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -291,10 +326,17 @@ async def main():
         @server.call_tool()
         async def handle_call_tool(
             name: str, arguments: dict[str, Any]
-        ) -> list[TextContent]:
-            """Handle tool calls."""
+        ):
+            """Dispatch a tool call.
+
+            Returns either a list[TextContent] (success) or a CallToolResult
+            with isError=True and structuredContent.code populated (failure).
+            See specs.md "Scenario 9 — Errors the user should hear in plain
+            language" for the contract the LLM relies on.
+            """
             try:
                 if name == "create_recipe":
+                    _require(arguments, "name", "ingredients", "directions")
                     result = await paprika_client.create_recipe(
                         name=arguments["name"],
                         ingredients=arguments["ingredients"],
@@ -314,6 +356,7 @@ async def main():
                     ]
 
                 elif name == "update_recipe":
+                    _require(arguments, "uid", "name", "ingredients", "directions")
                     result = await paprika_client.update_recipe(
                         uid=arguments["uid"],
                         name=arguments["name"],
@@ -334,6 +377,7 @@ async def main():
                     ]
 
                 elif name == "update_recipe_partial":
+                    _require(arguments, "uid")
                     result = await paprika_client.update_recipe_partial(
                         uid=arguments["uid"],
                         **{
@@ -422,6 +466,7 @@ async def main():
                     return [TextContent(type="text", text=grocery_text)]
 
                 elif name == "add_grocery_item":
+                    _require(arguments, "name", "ingredient")
                     result = await paprika_client.add_grocery_item(
                         name=arguments["name"],
                         ingredient=arguments["ingredient"],
@@ -438,6 +483,7 @@ async def main():
                     ]
 
                 elif name == "remove_grocery_item":
+                    _require(arguments, "item_name_or_id")
                     removed = await paprika_client.remove_grocery_item(
                         item_name_or_id=arguments["item_name_or_id"],
                         list_name_or_id=arguments.get("list_name_or_id")
@@ -445,18 +491,29 @@ async def main():
                     return [
                         TextContent(
                             type="text",
-                            text=f"Removed '{removed['name']}' (UID {removed['uid']}) from list {removed['list_uid']}.",
+                            text=f"Marked '{removed['name']}' (UID {removed['uid']}) as purchased on list {removed['list_uid']}. The item remains in Paprika's purchased history and can be un-checked or re-added later.",
                         )
                     ]
 
                 else:
-                    return [TextContent(type="text", text=f"Unknown tool: {name}")]
+                    raise InvalidArgumentError(f"I don't know how to do '{name}'.")
 
+            except PaprikaAPIError as e:
+                # All typed errors (auth, unreachable, rate-limited, not-found,
+                # ambiguous, invalid-argument, generic paprika_error) flow
+                # through here and become structured isError=True results.
+                return _error_result(e, name)
             except Exception as e:
-                logger.error(f"Error in tool {name}: {str(e)}")
-                return [
-                    TextContent(type="text", text=f"Error executing {name}: {str(e)}")
-                ]
+                # Last-resort safety net for genuinely unexpected bugs.
+                # We do NOT echo the exception text to the user (it could be
+                # a stack-trace fragment); a generic message is friendlier.
+                logger.exception("Unexpected error in tool %s", name)
+                return _error_result(
+                    PaprikaAPIError(
+                        "Something went wrong on my side. I've logged the details."
+                    ),
+                    name,
+                )
 
         # Parse HTTP arguments safely
         import os
@@ -622,12 +679,15 @@ async def main():
 
 def run_server():
     """Synchronous entry point for the console script."""
-    result = None
     try:
         result = asyncio.run(main())
-    except Exception as e:
-        logger.error(f"Server startup failed: {e}")
-        
+    except Exception:
+        # Re-raise so a misconfigured environment (bad credentials, missing
+        # config, etc.) produces a non-zero exit and a visible traceback in
+        # the systemd journal instead of silently "succeeding".
+        logger.exception("Server startup failed")
+        raise
+
     if result:
         import uvicorn
         app, host, port = result

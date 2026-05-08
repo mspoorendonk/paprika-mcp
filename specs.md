@@ -1,15 +1,188 @@
-Prepare for scenarios like this. Where a use talks to an LLM, which does the toolcalls from MCP:
+# Specification for Paprika grocerylist and recipe MCP server
 
-Tell me which grocery lists I have.
+## Usages
 
-Add chocolate to my grocery list.
+This server is designed to be driven by a voice agent: the user speaks in natural language, the LLM picks the right MCP tool, and the server returns short, speakable results. Everything that takes a list or item identifier accepts either a name or a UID — the server resolves names case-insensitively and falls back to unambiguous substring matches. When a request is ambiguous, the server returns a structured error with the candidates so the LLM can ask the user to disambiguate rather than silently picking one.
 
-Remove choco from my grocery list.
+**"Removing" a grocery item means marking it as purchased**, not deleting it. When a user says *"remove chocolate from my list"*, *"take the chicken off"*, or *"I bought the eggs"*, the intent is the same: the item should disappear from the active (unchecked) shopping view. The MCP server implements this by setting `purchased=true` on the item via Paprika's sync endpoint. The item stays in Paprika's history (visible under the checked-off section in the app) so the user can un-check or re-add it later. The server never permanently destroys grocery items.
 
-There is no choco on your default list, but I do see "chocolate" on it. Do you want to remove that?
+The scenarios below show the expected flow: user utterance → tool call(s) the LLM should make → server response → spoken reply.
 
+### Scenario 1 — Browsing grocery lists
 
-Everything can be passed in by name or by ID
+> **User:** "Tell me which grocery lists I have."
+
+- LLM calls `get_groceries` with no arguments.
+- Server returns the unchecked items grouped by list (the response includes the list name/UID for each item).
+- **Assistant:** "You have two lists: *Default* with 7 items, and *Costco run* with 3 items."
+
+> **User:** "What's on the Costco list?"
+
+- LLM calls `get_groceries` with `include_purchased=false` and filters the response to the *Costco run* list (or, if implemented, passes `list_name_or_id="Costco run"`).
+- **Assistant:** "Olive oil, paper towels, and a rotisserie chicken."
+
+### Scenario 2 — Adding an item
+
+> **User:** "Add chocolate to my grocery list."
+
+- LLM calls `add_grocery_item` with `name="chocolate"`, `ingredient="chocolate"` and no `list_name_or_id` (uses the default list).
+- Server returns the created item's UID and the list it was added to.
+- **Assistant:** "Added chocolate to your default list."
+
+> **User:** "Actually make it 200 grams of dark chocolate, on the Costco list."
+
+- LLM calls `remove_grocery_item` with `item_name_or_id="<uid from previous turn>"` to undo the first add.
+- LLM calls `add_grocery_item` with `name="dark chocolate"`, `ingredient="dark chocolate"`, `quantity="200g"`, `list_name_or_id="Costco run"`.
+- **Assistant:** "Done — 200 grams of dark chocolate is on the Costco list."
+
+### Scenario 3 — Disambiguating a removal
+
+> **User:** "Remove choco from my grocery list."
+
+- LLM calls `remove_grocery_item` with `item_name_or_id="choco"`.
+- Server finds no exact match for "choco" but sees "chocolate" and "chocolate chips" as substring candidates among the unpurchased items and returns an `AmbiguousMatchError` listing both with their UIDs and list names.
+- **Assistant:** "There's no item called *choco*, but I see *chocolate* on your default list and *chocolate chips* on the Costco list. Which one should I check off?"
+
+> **User:** "The plain chocolate one."
+
+- LLM calls `remove_grocery_item` with the UID of the *chocolate* candidate from the previous response (preferring UID over name once disambiguated).
+- Server marks the item `purchased=true`; it's no longer in the active list but remains in Paprika's checked-off history.
+- **Assistant:** "Done — chocolate is checked off your default list."
+
+### Scenario 4 — Single-match removal ("I bought it")
+
+> **User:** "I picked up the rotisserie chicken."
+
+- LLM calls `remove_grocery_item` with `item_name_or_id="rotisserie chicken"`.
+- Server finds exactly one unambiguous match across the user's active lists and marks it purchased.
+- **Assistant:** "Got it, rotisserie chicken is checked off."
+
+> **User:** "Wait, I grabbed the wrong one, put it back."
+
+- The MCP server has no "un-purchase" tool today; the LLM should tell the user to un-check it from the Paprika app, or (future enhancement) call a dedicated `restore_grocery_item` tool.
+- **Assistant:** "I can't un-check items yet — open the Paprika app and tap *rotisserie chicken* in the purchased section to put it back on the active list."
+
+### Scenario 5 — Browsing recipes
+
+> **User:** "What chicken recipes do I have?"
+
+- LLM calls `list_recipes` (cached, returns immediately after warm-up — see *Recipe cache* below).
+- LLM filters the returned list locally for "chicken" in the name/ingredients.
+- **Assistant:** "You have four: *Lemon roast chicken*, *Thai basil chicken*, *Chicken tikka masala*, and *Chicken noodle soup*."
+
+### Scenario 6 — Cooking a recipe and stocking up
+
+> **User:** "I want to make the Thai basil chicken tonight. Add what I'm missing to the grocery list."
+
+- LLM calls `list_recipes` and locates *Thai basil chicken* (name match → UID + ingredients block).
+- LLM compares the recipe's ingredients to the current pantry context the user has shared (or just asks the user which ones they're missing).
+- For each missing ingredient the LLM calls `add_grocery_item` with `name`/`ingredient` set to the ingredient line and `list_name_or_id` left empty (default list).
+- **Assistant:** "Added Thai basil, fish sauce, and bird's eye chillies to your default list."
+
+### Scenario 7 — Saving a new recipe dictated by voice
+
+> **User:** "Save a new recipe called *Quick weeknight pasta*. Ingredients: 200 grams spaghetti, two cloves of garlic, olive oil, chilli flakes, parsley. Directions: boil the pasta, sizzle the garlic and chilli in olive oil, toss together, finish with parsley."
+
+- LLM calls `create_recipe` with `name="Quick weeknight pasta"`, `ingredients` as a newline-separated string, `directions` as the spoken instructions, and leaves the optional fields empty.
+- Server returns the new UID; the recipe cache picks it up on the next `list_recipes` invocation via the index hash diff.
+- **Assistant:** "Saved *Quick weeknight pasta* to your recipes."
+
+### Scenario 8 — Editing an existing recipe
+
+> **User:** "On the Thai basil chicken, change the prep time to 10 minutes and add a note that the kids prefer it without chillies."
+
+- LLM calls `list_recipes` to resolve *Thai basil chicken* → UID.
+- LLM calls `update_recipe_partial` with `uid=<that uid>`, `prep_time="10 mins"`, and `notes` set to the appended note text.
+- **Assistant:** "Updated."
+
+### Scenario 9 — Errors the user should hear in plain language
+
+The voice agent's worst failure mode is *"Sorry, something went wrong."* Every tool the server exposes must therefore return errors that (a) name **what** failed, (b) name **why** in one short clause, and (c) where useful, suggest **what to do next**. The server returns errors via the MCP `isError=true` flag with a `TextContent` body that is already phrased for TTS — no stack traces, no UIDs, no HTTP status codes in the user-visible text. Detailed diagnostics go to the server log only.
+
+The categories below are the contract the LLM relies on. Each has a stable error code (returned in `structuredContent.code`) so the LLM can branch on category instead of pattern-matching prose.
+
+#### 9a. Paprika unreachable (`paprika_unreachable`)
+
+> **User:** "What's on my grocery list?"
+
+- LLM calls `get_groceries`.
+- Server cannot reach `paprikaapp.com` (DNS, TCP, TLS, or timeout).
+- Tool returns `isError=true`, code `paprika_unreachable`, text *"I can't reach the Paprika service right now. Please try again in a moment."*
+- **Assistant:** "I can't reach Paprika right now. Want me to try again in a minute?"
+
+#### 9b. Authentication failed (`paprika_auth_failed`)
+
+> **User:** "Add milk to the list."
+
+- LLM calls `add_grocery_item`.
+- Paprika rejects the credentials (HTTP 401/403 even after a re-login attempt).
+- Tool returns code `paprika_auth_failed`, text *"Paprika rejected my login. The saved username or password is probably wrong."*
+- **Assistant:** "Paprika won't accept my login. You'll need to update the credentials on the server."
+
+#### 9c. Rate-limited (`paprika_rate_limited`)
+
+> **User:** "List my recipes."
+
+- LLM calls `list_recipes` while the recipe-cache warm-up is being throttled by Paprika (HTTP 429 or temporary IP block).
+- If a populated cache exists, the server serves stale data and notes it ran without a refresh — **not** an error.
+- If no cache exists yet, the tool returns code `paprika_rate_limited`, text *"Paprika is rate-limiting us. I'll have your recipes ready in a couple of minutes."*
+- **Assistant:** "Paprika is throttling me — give it a minute or two and ask again."
+
+#### 9d. Item not found (`grocery_not_found`)
+
+> **User:** "Take the kale off the list."
+
+- LLM calls `remove_grocery_item` with `item_name_or_id="kale"`.
+- No active item matches `kale` — not even as a substring.
+- Tool returns code `grocery_not_found`, text *"There's nothing called 'kale' on your active grocery lists."*
+- **Assistant:** "I don't see kale on your list. Did you maybe already check it off?"
+
+#### 9e. Ambiguous match (`grocery_ambiguous`)
+
+Already shown in Scenario 3, but spelled out as a category: the tool returns `isError=true` (so the LLM treats it as a branch, not a success), code `grocery_ambiguous`, plus `structuredContent.candidates` containing `[{uid, name, list_name}, …]`. The text body lists the candidates by **name and list** only — never UIDs aloud.
+
+- **Assistant (reading the candidates):** "I see two: *chocolate* on your default list and *chocolate chips* on the Costco list. Which one?"
+
+#### 9f. List not found (`grocery_list_not_found`)
+
+> **User:** "Add olives to the *Trader Joe's* list."
+
+- LLM calls `add_grocery_item` with `list_name_or_id="Trader Joe's"`.
+- The user has no list resembling that name (no exact, substring, or fuzzy match).
+- Tool returns code `grocery_list_not_found`, text *"You don't have a grocery list called 'Trader Joe's'. Your lists are: Default, Costco run."*
+- **Assistant:** "There's no Trader Joe's list. You have Default and Costco run — want me to add olives to one of those?"
+
+#### 9g. Recipe not found (`recipe_not_found`)
+
+> **User:** "Update the prep time on *Quick weeknigt pasta* to 15 minutes." *(typo)*
+
+- LLM calls `list_recipes`, finds no match for *weeknigt*, and either (a) does the substring search itself and asks the user, or (b) calls `update_recipe_partial` with a guessed UID.
+- If the call is made with a UID that doesn't exist, the tool returns code `recipe_not_found`, text *"I can't find a recipe with that ID. It may have been deleted."*
+- **Assistant:** "I can't find that recipe — did you maybe mean *Quick weeknight pasta*?"
+
+#### 9h. Missing or invalid argument (`invalid_argument`)
+
+> **User:** "Save a new recipe." *(no name, no ingredients)*
+
+- LLM calls `create_recipe` with empty `name`.
+- The MCP SDK's input-schema validator fails the call before it reaches our code; it produces *"Input validation error: 'name' is a required property."*
+- The server upgrades that to a friendlier message via the same code: *"I need a name and at least the ingredients to save a recipe."*
+- **Assistant:** "I need a name for the recipe — what should I call it?"
+
+#### 9i. Unexpected Paprika failure (`paprika_error`)
+
+Catch-all for any other non-2xx Paprika response (e.g. 5xx, malformed JSON). The tool returns code `paprika_error`, text *"Paprika returned an unexpected error. I've logged the details."* The server logs the status code and response body for the operator. **Never** echo Paprika's raw response into the assistant message — voice users don't want HTML or JSON read aloud.
+
+- **Assistant:** "Something went wrong on Paprika's side. Try again in a moment, and if it keeps happening, check the server log."
+
+### Conventions the LLM should follow
+
+- **Resolve once, act with UIDs.** When a follow-up turn references an item the LLM just looked up, pass the UID rather than re-sending the name — this avoids re-triggering the disambiguation path.
+- **Never silently pick on ambiguity.** If the server returns an `AmbiguousMatchError`, surface the candidates to the user instead of guessing.
+- **Default list is implicit.** Omit `list_name_or_id` unless the user names a specific list.
+- **Purchased items are hidden by default.** Only pass `include_purchased=true` to `get_groceries` if the user explicitly asks about already-bought items. `remove_grocery_item` only matches against unpurchased items for the same reason.
+- **Read errors as their category, not their prose.** Branch on `structuredContent.code` (see Scenario 9) rather than parsing the user-facing text. The text is for the user; the code is for the LLM. Never read UIDs, HTTP status codes, or stack traces aloud.
+
 
 ## MCP Client Requirements & Transport Protocols
 

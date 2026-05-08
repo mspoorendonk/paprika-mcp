@@ -58,8 +58,8 @@ class TestPaprikaClient:
     async def test_remove_grocery_item(self, client):
         with patch.object(client, "get_groceries", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = [{"uid": "123", "name": "Apple", "list_uid": "list-456"}]
-            with patch.object(client, "_make_authenticated_request", new_callable=AsyncMock) as mock_req:
-                with patch.object(client, "_resolve_list_uid", new_callable=AsyncMock) as mock_resolve:
-                    mock_resolve.return_value = None
+            with patch.object(client, "get_grocery_lists", new_callable=AsyncMock) as mock_lists:
+                mock_lists.return_value = [{"uid": "list-456", "name": "Default"}]
+                with patch.object(client, "_make_authenticated_request", new_callable=AsyncMock) as mock_req:
                     await client.remove_grocery_item("123")
                     mock_req.assert_called_once()
