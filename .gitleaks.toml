@@ -1,0 +1,61 @@
+# gitleaks config — extends the default ruleset with project-specific rules
+# for the kinds of secrets that have actually leaked from this repo.
+#
+# Reference: https://github.com/gitleaks/gitleaks#configuration
+[extend]
+useDefault = true
+
+[[rules]]
+id = "http-basic-auth-header"
+description = "HTTP Authorization: Basic <base64> header (the exact leak we hit on 2026-05-06)"
+# Match `Authorization: Basic <base64>` where the base64 part is at least
+# 12 chars (covers "user:pass" and longer).
+regex = '''(?i)Authorization["']?\s*[:=]\s*["']?Basic\s+[A-Za-z0-9+/=_-]{12,}'''
+keywords = ["basic"]
+
+[[rules]]
+id = "url-with-userinfo"
+description = "URL with embedded user:password@host"
+regex = '''https?:\/\/[^\s/$.?#:@]+:[^\s/$.?#@]+@'''
+keywords = ["http://", "https://"]
+
+[[rules]]
+id = "paprika-credentials"
+description = "Hardcoded PAPRIKA_USERNAME / PAPRIKA_PASSWORD assignments outside .env"
+# Require an = sign followed by a quoted string OR a non-placeholder
+# literal that contains at least one digit or special char (so it doesn't
+# match Python kwargs like `paprika_username=username` or shell expansions
+# like `PAPRIKA_PASSWORD=$PASS`).
+regex = '''(?i)(PAPRIKA|MCPUSER)_(USERNAME|PASSWORD)\s*=\s*(?:["'][^"'<>$\s]{6,}["']|[A-Za-z0-9._@+/=-]*[0-9!@#%^&*][A-Za-z0-9._@+/=-]*)'''
+keywords = ["paprika_", "mcpuser_"]
+
+# Ignore allow-listed paths so we don't flag our own templates and docs.
+[allowlist]
+description = "Files allowed to mention these patterns"
+paths = [
+  '''(?i)\.env\.example$''',
+  '''(?i)\.env\.template$''',
+  # Documentation that demonstrates the format with placeholders.
+  '''^README\.md$''',
+  '''^specs\.md$''',
+  '''^AGENTS\.md$''',
+  # The provisioning script literally generates these — it's the source.
+  '''^scripts/add-mcp-client\.sh$''',
+  # tmp/ is gitignored anyway, but belt-and-braces.
+  '''^tmp/''',
+  # Build artefacts and bytecode (also gitignored, but scanned by --no-git).
+  '''(^|/)__pycache__/''',
+  '''\.egg-info/''',
+  # The local .env is gitignored; finding it via --no-git is expected.
+  '''^\.env$''',
+  # config.py prints `PAPRIKA_USERNAME=your_email@example.com` as usage help.
+  '''^src/config\.py$''',
+]
+# Allow obvious placeholders (anything wrapped in <>, $VAR, base64-of-USER:PASS, etc.)
+regexes = [
+  '''<[^>]+>''',
+  '''\$\{?[A-Z_]+\}?''',
+  '''base64\(user:pass\)''',
+  '''your_email@example\.com''',
+  '''your_password''',
+]

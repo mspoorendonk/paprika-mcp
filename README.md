@@ -274,6 +274,26 @@ tests in isolation.
 4. Format code: `black src/ tests/`
 5. Commit and push your changes
 
+### Pre-commit secret scanning
+
+The repo ships with a [pre-commit](https://pre-commit.com) config that runs
+[gitleaks](https://github.com/gitleaks/gitleaks) on every commit. Custom
+rules in `.gitleaks.toml` catch the patterns that have actually leaked from
+this repo before — `Authorization: Basic <base64>` headers, URLs with
+embedded `user:password@`, and hard-coded `PAPRIKA_*` / `MCPUSER_*` literal
+values.
+
+Set up once per clone:
+
+```bash
+pip install pre-commit       # or: uv tool install pre-commit
+pre-commit install           # registers .git/hooks/pre-commit
+
+# Optionally scan the existing tree and full history:
+pre-commit run --all-files
+gitleaks detect --source .
+```
+
 ## Troubleshooting
 
 ### Common Issues

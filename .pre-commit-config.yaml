@@ -1,0 +1,8 @@
+# Pre-commit config — secret scanning before each commit.
+# Install once per clone:  pre-commit install
+# Run on demand:           pre-commit run --all-files
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
