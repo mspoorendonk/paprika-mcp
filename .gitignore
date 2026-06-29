@@ -30,6 +30,11 @@ wheels/
 .env.local
 .env.*.local
 
+# Secrets & runtime state — NEVER commit (this is a public repo)
+client_secret_*.json
+data/oauth_state.json
+data/audit.jsonl
+
 # IDE
 .vscode/
 .idea/

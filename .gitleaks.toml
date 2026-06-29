@@ -39,8 +39,6 @@ paths = [
   '''^README\.md$''',
   '''^specs\.md$''',
   '''^AGENTS\.md$''',
-  # The provisioning script literally generates these — it's the source.
-  '''^scripts/add-mcp-client\.sh$''',
   # tmp/ is gitignored anyway, but belt-and-braces.
   '''^tmp/''',
   # Build artefacts and bytecode (also gitignored, but scanned by --no-git).

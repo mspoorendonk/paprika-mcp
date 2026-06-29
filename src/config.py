@@ -49,6 +49,21 @@ def get_config() -> Config:
     parser.add_argument("--host", default="0.0.0.0", help="HTTP host (default 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8000, help="HTTP port (default 8000)")
     parser.add_argument(
+        "--lan-host",
+        help="Optional second, unauthenticated listener bound to this LAN host "
+        "(e.g. for the Home Assistant MCP integration). Keep off the public proxy.",
+    )
+    parser.add_argument(
+        "--lan-port",
+        type=int,
+        help="Port for the unauthenticated LAN listener (used with --lan-host).",
+    )
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        help="Make the PRIMARY listener unauthenticated (pure-LAN deployment).",
+    )
+    parser.add_argument(
         "--base-path",
         default="",
         help=(

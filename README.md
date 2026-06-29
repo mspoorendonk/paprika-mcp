@@ -49,7 +49,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Create virtual environment and install dependencies using uv
 uv venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-uv pip install -r requirements.txt
+uv pip install -e .
 ```
 
 ### 2. Configuration
@@ -123,7 +123,7 @@ In Home Assistant: **Settings → Devices & Services → Add Integration → "Mo
 
 - **Server URL:** `http://<linux-machine-ip>:8000/mcp`
 
-Over a public HTTPS reverse proxy with basic auth, embed the credentials in the URL: `https://user:pass@example.com/<prefix>/mcp`.
+Over a public HTTPS reverse proxy, point it at the proxied URL (`https://example.com/<prefix>/mcp`); the integration runs the OAuth flow (see [section 4](#4-authentication--oauth2-with-google-login)).
 
 ### 3. Reverse-Proxy Notes
 
@@ -133,29 +133,18 @@ When fronting the server with nginx (or similar):
 - Disable buffering for streaming: `proxy_buffering off; proxy_cache off; chunked_transfer_encoding off;` and a long `proxy_read_timeout`.
 - Set `proxy_http_version 1.1` and `proxy_set_header Connection '';`.
 
-### 4. Per-client Basic-Auth users (recommended)
+### 4. Authentication — OAuth2 with Google login
 
-Give every client install its own Basic-Auth user instead of sharing one
-`mcpuser`. Selective revocation, per-client audit logs (`$remote_user` in
-nginx), and easy offboarding. Use `scripts/add-mcp-client.sh`:
+Authentication is OAuth 2.0 — the server is its own Authorization Server and
+brokers the human login to Google (OIDC), allow-listing by email. HTTP
+Basic-Auth at nginx is **retired**; clients no longer need per-client
+passwords. See [`src/oauth_app.py`](src/oauth_app.py) for the implementation.
 
-```bash
-# Tell the script where the htpasswd lives and what your public URL is:
-export HTPASSWD_FILE=/opt/stack/nginx/.htpasswd_mcp   # default
-export MCP_URL=https://<your-domain>/paprika/mcp
-
-scripts/add-mcp-client.sh claude-code laptop          # → user "claude-code-laptop"
-scripts/add-mcp-client.sh homeassistant haos          # → user "homeassistant-haos"
-scripts/add-mcp-client.sh claude-web                  # web clients have no machine
-```
-
-The script generates a 40-char URL-safe password, adds a bcrypt entry to the
-htpasswd file, and writes a copy-pasteable connection snippet for the chosen
-tool to `tmp/credentials/<user>.txt` (gitignored, mode 600). Recognised
-tools: `claude-code`, `claude-desktop`, `gemini-cli`, `vscode-copilot`,
-`antigravity`, `homeassistant`, `claude-web`, `gemini-web`.
-
-To revoke one client: `sudo htpasswd -D $HTPASSWD_FILE <user>`.
+Server-side config lives in `.env` (gitignored): `OAUTH_ISSUER_URL`,
+`OAUTH_PATH_PREFIX`, the Google OAuth client credentials, and the email
+allowlist. MCP clients only need the endpoint URL — they run the OAuth flow
+automatically and log in with Google in the browser. Access is revoked by
+removing an email from the allowlist.
 
 ## Usage Examples
 
@@ -310,8 +299,8 @@ gitleaks detect --source .
 
 #### Import Errors
 - Confirm virtual environment is activated
-- Reinstall dependencies: `pip install -r requirements.txt`
-- Check Python version compatibility (3.8+)
+- Reinstall dependencies: `uv pip install -e .`
+- Check Python version compatibility (3.12+)
 
 ## API Rate Limiting
 
@@ -369,18 +358,15 @@ Add the MCP server to your VS Code `settings.json`:
 
 ### Configure Claude Code (CLI)
 
-Use the streamable HTTP transport. If your endpoint is behind HTTP basic auth, pass the `Authorization` header:
+Use the streamable HTTP transport. The endpoint uses OAuth (see
+[section 4](#4-authentication--oauth2-with-google-login)); Claude Code runs the
+OAuth flow and opens a browser for the Google login on first connect:
 
 ```bash
-claude mcp add --transport http paprika https://<your-domain>/paprika/mcp \
-  --header "Authorization: Basic $(printf '%s:%s' "$USER" "$PASS" | base64)"
+claude mcp add --transport http paprika https://<your-domain>/paprika/mcp
 ```
 
 For a local stdio install: `claude mcp add paprika -- /path/to/paprika-mcp-python-server/.venv/bin/paprika-mcp-python-server`.
-
-If you've provisioned a per-client user (see `scripts/add-mcp-client.sh`), the
-generated `tmp/credentials/<user>.txt` already contains the exact `claude mcp
-add` command — just paste it.
 
 ### Configure Google Antigravity
 
@@ -407,10 +393,7 @@ Gemini CLI's `settings.json` distinguishes streamable HTTP (`httpUrl`) from SSE 
       "command": "/path/to/paprika-mcp-python-server/.venv/bin/paprika-mcp-python-server"
     },
     "paprika-remote": {
-      "httpUrl": "https://<your-domain>/paprika/mcp",
-      "headers": {
-        "Authorization": "Basic <base64(user:pass)>"
-      }
+      "httpUrl": "https://<your-domain>/paprika/mcp"
     }
   }
 }
@@ -418,10 +401,12 @@ Gemini CLI's `settings.json` distinguishes streamable HTTP (`httpUrl`) from SSE 
 
 or from the CLI: 
 ```cli
-gemini mcp add --transport http --scope user paprika https://<your-domain>/paprika/mcp --header "Authorization: Basic $AUTH"
+gemini mcp add --transport http --scope user paprika https://<your-domain>/paprika/mcp
 ```
+
+The endpoint uses OAuth (see [section 4](#4-authentication--oauth2-with-google-login)); Gemini runs the OAuth flow and opens a browser for the Google login on first connect.
 
 
 ### Web Clients (Claude.ai & Gemini Web)
 
-For cloud / web clients to interact with your local Paprika deployment, give them your public HTTPS streamable HTTP URL (`https://<your-domain>/<prefix>/mcp`) and your credentials (e.g., via Basic Auth) according to their respective custom-connector workflows.
+For cloud / web clients to interact with your local Paprika deployment, give them your public HTTPS streamable HTTP URL (`https://<your-domain>/<prefix>/mcp`) as a custom connector. They complete the OAuth flow (see [section 4](#4-authentication--oauth2-with-google-login)) with a Google login — no per-client credentials to share.

@@ -1,0 +1,35 @@
+# Project metadata + dependencies (single source of truth).
+# Follows the shared MCP standard: Python 3.12, uv, committed lockfile.
+[project]
+name = "paprika-mcp"
+version = "1.0.0"
+description = "Model Context Protocol server for Paprika Recipe Manager integration"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Sándor Daróczi" }]
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.15.0",
+    "aiohttp>=3.12.0",
+    "pydantic>=2.11.0",
+    "python-dotenv>=1.1.0",
+    "starlette>=0.45.0",
+    "uvicorn>=0.34.0",
+    "anyio>=4.8.0",
+    "httpx>=0.27.0",        # Google OIDC token + userinfo calls (OAuth2)
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pre-commit"]
+
+[project.scripts]
+paprika-mcp = "server:run_server"
+
+[project.urls]
+Homepage = "https://github.com/mspoorendonk/paprika-mcp"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
