@@ -65,6 +65,8 @@ def _outcome(result) -> tuple[bool, str | None]:
     return True, None
 
 
+_registered_tools = set()
+
 def audited(tool_name: str):
     """Wrap an async tool fn so each call is recorded with the request identity.
 
@@ -72,6 +74,7 @@ def audited(tool_name: str):
     await the HTTP client. Identity comes from oauth_app.current_identity(),
     set per request after bearer-token validation.
     """
+    _registered_tools.add(tool_name)
     def deco(fn):
         @wraps(fn)
         async def wrapper(*args, **kwargs):
@@ -98,10 +101,11 @@ def audited(tool_name: str):
 
 def stats() -> dict:
     if not AUDIT_FILE.exists():
-        return {"total": 0, "per_client": {}, "per_tool": {}, "per_day": {}, "last_seen": {}}
+        return {"total": 0, "per_client": {}, "per_tool": {t: 0 for t in _registered_tools}, "top_errors": {}, "per_day": {}, "last_seen": {}}
     per_client: Counter = Counter()
     per_tool: Counter = Counter()
     per_day: Counter = Counter()
+    error_counts: Counter = Counter()
     last_seen: dict[str, str] = {}
     errors = total = 0
     for raw in AUDIT_FILE.read_text(encoding="utf-8").splitlines():
@@ -117,11 +121,19 @@ def stats() -> dict:
             last_seen[e["client"]] = e.get("ts")
         if not e.get("ok", True):
             errors += 1
+            if "error" in e:
+                error_counts[e["error"]] += 1
+                
+    for t in _registered_tools:
+        if t not in per_tool:
+            per_tool[t] = 0
+
     return {
         "total": total, "errors": errors,
         "error_rate": round(errors / total, 3) if total else 0,
         "per_client": dict(per_client.most_common()),
         "per_tool": dict(per_tool.most_common()),
+        "top_errors": dict(error_counts.most_common(15)),
         "per_day": dict(sorted(per_day.items())),
         "last_seen": last_seen,
     }
