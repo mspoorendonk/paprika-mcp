@@ -129,7 +129,7 @@ The scenarios below show the expected flow: user utterance → tool call(s) the 
   - `list_name_or_id` (optional) — Target grocery list. Defaults to the user's default list if omitted.
 - **Returns**: Plain-text summary: recipe names, number of items added, list name.
 - **Errors**: Uses the same error codes as other tools — `recipe_not_found` if the recipe cannot be resolved, `grocery_list_not_found` if the list name doesn't exist, plus the standard connectivity codes.
-- **Recipe linking**: Every grocery item has `recipe_uid` set to the recipe's UID. The Paprika app resolves this to the recipe name and groups the items under it in the shopping view. The `recipe` field in the GET response is populated by Paprika server-side; it does not need to be set in the POST payload.
+- **Recipe linking**: Every grocery item must have `recipe_uid` set to the recipe's UID, and `recipe` set to the recipe name. The Paprika app uses both to group the items under the recipe name in the shopping view.
 - **Bulk POST**: All ingredients are sent in a **single POST** to `/sync/groceries/` as a JSON array (gzip-compressed multipart). This is more efficient than one call per item and matches how the official app adds a recipe to the shopping list.
 - **`aisle` field**: Always sent as empty string — Paprika auto-assigns the aisle based on the `ingredient` value.
 - **`separate` field**: Set to `false` for all items (matches the official app behaviour; `true` would visually separate the item from others in the same aisle).

@@ -1061,14 +1061,14 @@ class PaprikaClient:
                     f"The recipe '{recipe_name}' has no ingredients listed."
                 )
             
-            ingredient_lines_per_recipe.append((recipe_uid, lines))
+            ingredient_lines_per_recipe.append((recipe_uid, recipe_name, lines))
 
         # --- Resolve list ---
         resolved_list_uid = await self._resolve_list_uid(list_name_or_id)
 
         # --- Build grocery objects ---
         grocery_items = []
-        for recipe_uid, lines in ingredient_lines_per_recipe:
+        for recipe_uid, recipe_name, lines in ingredient_lines_per_recipe:
             for line in lines:
                 grocery_items.append({
                     "uid": self._generate_uuid().lower(),
@@ -1082,7 +1082,7 @@ class PaprikaClient:
                     "purchased": False,
                     "separate": False,
                     "recipe_uid": recipe_uid,
-                    "recipe": None,       # Populated server-side by Paprika
+                    "recipe": recipe_name,
                 })
 
         # --- Single bulk POST ---
