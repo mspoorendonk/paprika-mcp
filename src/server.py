@@ -33,7 +33,7 @@ from typing import Annotated, Optional
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 import audit
 import oauth_app
@@ -216,14 +216,51 @@ async def update_recipe_partial(
 @audit.audited("list_recipes")
 @_tool_errors
 async def list_recipes(
-    limit: Annotated[int, Field(description="Maximum number of recipes to return")] = 50,
+    query: Annotated[str, Field(
+        description="Case-insensitive substring filter applied to both recipe name "
+                    "and ingredients. Returns all non-trashed recipes when omitted.",
+    )] = "",
+    names_only: Annotated[bool, Field(
+        description="When true, return only uid and name per recipe (compact, low "
+                    "token cost — good for browsing and searching). When false "
+                    "(default), return the full recipe including ingredients, "
+                    "description, notes, times, and servings.",
+    )] = False,
+    limit: Annotated[int, Field(description="Maximum number of recipes to return after filtering")] = 50,
 ):
-    """List recipes from Paprika with their basic information."""
-    recipes = await _client_or_raise().list_recipes(limit=limit)
-    if not recipes:
-        return "No recipes found in your Paprika account."
+    """List recipes from Paprika, served from the in-memory cache.
 
-    recipe_text = f"Found {len(recipes)} recipes:\n\n"
+    Pass ``query`` to filter by name or ingredient. Pass ``names_only=true``
+    when you only need recipe names (e.g. to browse or search) — this keeps
+    the response compact and avoids sending unnecessary ingredient text.
+    Omit both to get the full catalogue with all details.
+    """
+    recipes = await _client_or_raise().list_recipes(limit=limit, query=query)
+    if not recipes:
+        msg = (
+            f"No recipes found matching '{query}'."
+            if query
+            else "No recipes found in your Paprika account."
+        )
+        return msg
+
+    if names_only:
+        lines = "\n".join(
+            f"• {r['name']} (UID: {r['uid']})" for r in recipes
+        )
+        header = (
+            f"Found {len(recipes)} recipes matching '{query}':\n\n"
+            if query
+            else f"Found {len(recipes)} recipes:\n\n"
+        )
+        return header + lines
+
+    # Full detail output
+    recipe_text = (
+        f"Found {len(recipes)} recipes matching '{query}':\n\n"
+        if query
+        else f"Found {len(recipes)} recipes:\n\n"
+    )
     for recipe in recipes:
         recipe_text += f"• **{recipe['name']}**\n"
         recipe_text += f"  UID: {recipe['uid']}\n"
@@ -339,6 +376,80 @@ async def remove_grocery_item(
         f"{removed['list_uid']}. The item remains in Paprika's purchased history "
         f"and can be un-checked or re-added later."
     )
+
+
+@mcp.tool()
+@audit.audited("add_recipes_to_grocery_list")
+@_tool_errors
+async def add_recipes_to_grocery_list(
+    recipes: Annotated[list[str], Field(
+        description="List of recipe names or UIDs to add. Resolved from the recipe "
+                    "cache: exact UID, case-insensitive exact name, or unambiguous "
+                    "substring match.",
+    )],
+    list_name_or_id: Annotated[str, Field(
+        description="Name or UID of the grocery list to add the ingredients to. "
+                    "Uses the account's default list when omitted.",
+    )] = "",
+):
+    """Add all ingredients of one or more recipes to the grocery list in one step.
+
+    Resolves the recipes by name or UID from the cache, then sends every
+    non-empty ingredient line as a grocery item in a single bulk POST to
+    Paprika. Each item is linked to the recipe via its ``recipe_uid`` so the
+    Paprika app groups them under the recipe name in its shopping view — the
+    same behaviour as using the in-app \"Add to Grocery List\" button.
+    """
+    result = await _client_or_raise().add_recipes_to_grocery_list(
+        recipe_names_or_ids=recipes,
+        list_name_or_id=list_name_or_id or None,
+    )
+    names_str = ", ".join(f"'{n}'" for n in result['recipe_names'])
+    return (
+        f"Added {result['item_count']} ingredients for "
+        f"{names_str} to your grocery list "
+        f"(list UID: {result['list_uid']}). "
+        f"They are grouped under the recipe name in the Paprika app."
+    )
+
+
+class MealRequest(BaseModel):
+    recipe_name_or_id: str = Field(
+        description="Name or UID of the recipe to schedule."
+    )
+    date: str = Field(
+        description="Date to schedule the meal, in YYYY-MM-DD format (e.g. '2026-07-05')."
+    )
+    meal_type: str = Field(
+        default="dinner",
+        description="Meal slot: 'breakfast', 'lunch', 'dinner' (default), or 'snack'."
+    )
+
+@mcp.tool()
+@audit.audited("plan_meals")
+@_tool_errors
+async def plan_meals(
+    meals: Annotated[list[MealRequest], Field(
+        description="List of meals to schedule. Each requires a recipe, date, and optional meal_type.",
+    )],
+):
+    """Schedule one or more recipes in the Paprika meal planner.
+
+    Resolves each recipe by name or UID from the cache and adds it to the
+    meal planner on the given date as the specified meal type. All meals are
+    sent in a single bulk POST to Paprika.
+    """
+    requests = [m.model_dump() for m in meals]
+    results = await _client_or_raise().plan_meals(requests)
+    
+    if not results:
+        return "No meals were provided to schedule."
+        
+    lines = []
+    for r in results:
+        lines.append(f"- '{r['recipe_name']}' as {r['meal_type']} on {r['date']}")
+        
+    return f"Scheduled {len(results)} meals:\n" + "\n".join(lines)
 
 
 @mcp.tool()

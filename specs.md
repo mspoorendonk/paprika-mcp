@@ -66,9 +66,21 @@ The scenarios below show the expected flow: user utterance → tool call(s) the 
 
 > **User:** "What chicken recipes do I have?"
 
-- LLM calls `list_recipes` (cached, returns immediately after warm-up — see *Recipe cache* below).
-- LLM filters the returned list locally for "chicken" in the name/ingredients.
+- LLM calls `list_recipes` with `query="chicken"` and `names_only=true`.
+- Server filters the cache for "chicken" in the recipe name or ingredients (case-insensitive substring) and returns only `[{uid, name}]` — no ingredients block, keeping the response compact.
 - **Assistant:** "You have four: *Lemon roast chicken*, *Thai basil chicken*, *Chicken tikka masala*, and *Chicken noodle soup*."
+
+> **User:** "Tell me more about the Thai basil chicken."
+
+- LLM calls `list_recipes` with `query="Thai basil chicken"` and `names_only=false` (default).
+- Server returns the full recipe including ingredients, description, notes, times, and servings.
+- **Assistant:** "Thai basil chicken serves 4. Ingredients: …"
+
+#### `list_recipes` tool contract
+
+- **`query`** (optional, default `""`) — Case-insensitive substring filter applied to both `name` and `ingredients`. Returns all non-trashed recipes when omitted.
+- **`names_only`** (optional, default `false`) — When `true`, each result contains only `uid` and `name`. Use this for browsing/searching where ingredients aren't needed. When `false`, the full recipe body is returned (ingredients, description, notes, times, servings).
+- **`limit`** (optional, default `50`) — Maximum results after filtering.
 
 ### Scenario 6 — Cooking a recipe and stocking up
 
@@ -94,6 +106,36 @@ The scenarios below show the expected flow: user utterance → tool call(s) the 
 - LLM calls `list_recipes` to resolve *Thai basil chicken* → UID.
 - LLM calls `update_recipe_partial` with `uid=<that uid>`, `prep_time="10 mins"`, and `notes` set to the appended note text.
 - **Assistant:** "Updated."
+
+### Scenario 10 — Adding all recipe ingredients to the grocery list in one step
+
+> **User:** "I'm making Thai basil chicken tomorrow. Add all the ingredients to my shopping list."
+
+- LLM calls `add_recipes_to_grocery_list` with `recipes=["Thai basil chicken"]` (and optionally `list_name_or_id` if the user named a specific list).
+- Server resolves the recipes by name from the cache, parses their `ingredients` fields line by line, and adds each non-empty line as a grocery item — all linked back to the recipe via Paprika's `recipe_uid` field so the Paprika app can group them under the recipe name in its shopping view.
+- Server returns a summary: recipe names, number of items added, and the target list.
+- **Assistant:** "Added 8 ingredients for Thai basil chicken to your default shopping list."
+
+> **User:** "Actually, put them on the Costco list."
+
+- LLM calls `add_recipes_to_grocery_list` with `recipes=["Thai basil chicken"]` and `list_name_or_id="Costco run"`.
+- **Assistant:** "Done — 8 ingredients for Thai basil chicken are on your Costco list."
+
+#### Tool contract
+
+- **Name**: `add_recipes_to_grocery_list`
+- **Parameters**:
+  - `recipes` (required) — List of names or UIDs of the recipes to add. Resolved via the recipe cache.
+  - `list_name_or_id` (optional) — Target grocery list. Defaults to the user's default list if omitted.
+- **Returns**: Plain-text summary: recipe names, number of items added, list name.
+- **Errors**: Uses the same error codes as other tools — `recipe_not_found` if the recipe cannot be resolved, `grocery_list_not_found` if the list name doesn't exist, plus the standard connectivity codes.
+- **Recipe linking**: Every grocery item has `recipe_uid` set to the recipe's UID. The Paprika app resolves this to the recipe name and groups the items under it in the shopping view. The `recipe` field in the GET response is populated by Paprika server-side; it does not need to be set in the POST payload.
+- **Bulk POST**: All ingredients are sent in a **single POST** to `/sync/groceries/` as a JSON array (gzip-compressed multipart). This is more efficient than one call per item and matches how the official app adds a recipe to the shopping list.
+- **`aisle` field**: Always sent as empty string — Paprika auto-assigns the aisle based on the `ingredient` value.
+- **`separate` field**: Set to `false` for all items (matches the official app behaviour; `true` would visually separate the item from others in the same aisle).
+- **Ingredient parsing**: Each non-empty, non-whitespace line of the recipe's `ingredients` field becomes one grocery item. The full line is used as both `name` and `ingredient`; `quantity` is left empty (the quantity is embedded in the ingredient line as Paprika stores it).
+
+> **API reference**: [`aarons22/paprika-tools` API_REFERENCE.md §Grocery](https://github.com/aarons22/paprika-tools/blob/main/API_REFERENCE.md) — community-maintained reference for the undocumented Paprika sync API.
 
 ### Scenario 9 — Errors the user should hear in plain language
 
@@ -182,6 +224,34 @@ Catch-all for any other non-2xx Paprika response (e.g. 5xx, malformed JSON). The
 - **Default list is implicit.** Omit `list_name_or_id` unless the user names a specific list.
 - **Purchased items are hidden by default.** Only pass `include_purchased=true` to `get_groceries` if the user explicitly asks about already-bought items. `remove_grocery_item` only matches against unpurchased items for the same reason.
 - **Read errors as their category, not their prose.** Branch on `structuredContent.code` (see Scenario 9) rather than parsing the user-facing text. The text is for the user; the code is for the LLM. Never read UIDs, HTTP status codes, or stack traces aloud.
+- **Bulk ingredient add.** When the user wants to plan a meal and add all its ingredients at once, prefer `add_recipes_to_grocery_list` over calling `add_grocery_item` in a loop. The single-call version is faster, keeps items grouped by recipe in the Paprika app, and avoids timeouts on large ingredient lists.
+### Scenario 11 — Planning a recipe as dinner on a specific day
+
+> **User:** "Plan the Thai basil chicken as dinner on Saturday."
+
+- LLM resolves "Saturday" to the correct date (e.g. `2026-07-05`).
+- LLM calls `plan_meals` with `meals=[{"recipe_name_or_id": "Thai basil chicken", "date": "2026-07-05", "meal_type": "dinner"}]`.
+- Server resolves the recipe from cache, builds a meal object, and POSTs it to Paprika's `/sync/meals/` endpoint.
+- **Assistant:** "Scheduled Thai basil chicken as dinner on Saturday the 5th."
+
+> **User:** "Put the blueberry muffins on Sunday morning."
+
+- LLM calls `plan_meals` with `meals=[{"recipe_name_or_id": "blueberry muffins", "date": "2026-07-06", "meal_type": "breakfast"}]`.
+- **Assistant:** "Scheduled blueberry muffins as breakfast on Sunday the 6th."
+
+#### Tool contract
+
+- **Name**: `plan_meals`
+- **Parameters**:
+  - `meals` (required) — List of meals to schedule. Each meal requires:
+    - `recipe_name_or_id` (required) — Name or UID of the recipe.
+    - `date` (required) — Target date in `YYYY-MM-DD` format.
+    - `meal_type` (optional, default `"dinner"`) — One of `breakfast`, `lunch`, `dinner`, `snack`. Case-insensitive.
+- **Returns**: Plain-text spoken confirmation: number of meals scheduled, and details per meal.
+- **Errors**: `recipe_not_found` if any recipe cannot be resolved; `invalid_argument` if the date format or meal type is invalid; standard connectivity codes.
+- **API**: POSTs a gzip-compressed JSON array to `POST /v2/sync/meals/`. There is no per-uid meals endpoint; all meal plan writes go to the array endpoint. `type_uid` is sent as an empty string (Paprika ignores it). `date` uses `"YYYY-MM-DD 00:00:00"` format.
+- **Meal type integers**: `breakfast=0`, `lunch=1`, `dinner=2`, `snack=3` (as used in the Paprika sync API).
+
 
 
 ## MCP Client Requirements & Transport Protocols

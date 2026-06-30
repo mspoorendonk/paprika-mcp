@@ -19,6 +19,15 @@ logger = logging.getLogger(__name__)
 RECIPE_FETCH_CONCURRENCY = 3
 RECIPE_FETCH_JITTER_SECONDS = 0.05
 
+# Meal type mapping for the Paprika meal planner.
+# Source: API_REFERENCE.md §Meal Plans (verified live 2026-06-29).
+MEAL_TYPE_MAP: dict[str, int] = {
+    "breakfast": 0,
+    "lunch": 1,
+    "dinner": 2,
+    "snack": 3,
+}
+
 
 class PaprikaAPIError(Exception):
     """Base class for all Paprika MCP errors.
@@ -684,15 +693,20 @@ class PaprikaClient:
             # empty list the first time and a real refresh attempt next call.
             self._cache_ready.set()
 
-    async def list_recipes(self, limit: int = 50) -> List[Dict[str, Any]]:
+    async def list_recipes(self, limit: int = 50, query: str = "") -> List[Dict[str, Any]]:
         """
         List recipes from Paprika, served from a hash-validated cache.
 
         Args:
-            limit: Maximum number of recipes to return.
+            limit: Maximum number of recipes to return (applied after filtering).
+            query: Case-insensitive substring filter. When non-empty, only recipes
+                whose ``name`` or ``ingredients`` contain the query string are
+                returned. Matches against both fields so "chicken" finds recipes
+                named "Chicken tikka" as well as recipes that merely list chicken
+                in their ingredients.
 
         Returns:
-            List of recipe data (excluding recipes in trash).
+            List of recipe data (excluding recipes in trash), sorted alphabetically.
 
         Raises:
             PaprikaAPIError: If the lightweight index call fails.
@@ -714,9 +728,19 @@ class PaprikaClient:
             r for r in self._recipe_cache.values()
             if not r.get("in_trash", False)
         ]
+
+        if query:
+            q = query.lower()
+            recipes = [
+                r for r in recipes
+                if q in (r.get("name") or "").lower()
+                or q in (r.get("ingredients") or "").lower()
+            ]
+
         # Stable order so LLM output is reproducible.
         recipes.sort(key=lambda r: (r.get("name") or "").lower())
         return recipes[:limit]
+
 
     def _resolve_fuzzy(self, query: str, items: List[Dict[str, Any]], name_key: str = "name", id_key: str = "uid") -> Optional[Dict[str, Any]]:
         """Resolve a query string to an item using ID, exact name, substring, or fuzzy matching."""
@@ -924,7 +948,8 @@ class PaprikaClient:
         quantity: str = "",
         instruction: str = "",
         aisle: str = "",
-        list_name_or_id: Optional[str] = None
+        list_name_or_id: Optional[str] = None,
+        recipe_uid: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Add a grocery item to Paprika.
@@ -934,8 +959,10 @@ class PaprikaClient:
             ingredient: Ingredient name
             quantity: Quantity string
             instruction: Optional instructions
-            aisle: Optional aisle name
+            aisle: Optional aisle name (leave empty for Paprika auto-assignment)
             list_name_or_id: Target list via Name or UID (uses a default if not provided)
+            recipe_uid: Optional UID of the recipe this ingredient belongs to. Paprika
+                uses this to group grocery items by recipe in its shopping view.
 
         Returns:
             The created grocery item
@@ -944,9 +971,9 @@ class PaprikaClient:
             PaprikaAPIError: If creation fails
         """
         resolved_list_uid = await self._resolve_list_uid(list_name_or_id)
-            
+
         uid = self._generate_uuid().lower()
-        
+
         grocery_obj = {
             "uid": uid,
             "name": name,
@@ -957,16 +984,128 @@ class PaprikaClient:
             "aisle": aisle,
             "order_flag": 0,
             "purchased": False,
-            "recipe_uid": None,
+            "separate": False,
+            "recipe_uid": recipe_uid,
+            "recipe": None,
         }
-        
+
         gzipped_data = self._gzip_json([grocery_obj])
         data = aiohttp.FormData()
         data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
 
         await self._make_authenticated_request("POST", "/sync/groceries", data=data)
-        logger.info(f"Successfully created grocery: {name}")
+        logger.info(f"Successfully created grocery: {name} (recipe_uid={recipe_uid})")
         return grocery_obj
+
+    async def add_recipes_to_grocery_list(
+        self,
+        recipe_names_or_ids: List[str],
+        list_name_or_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Add all ingredients of multiple recipes to the grocery list in a single bulk POST.
+
+        Resolves the recipes from the cache by UID, exact name, or substring match.
+        Each non-empty line of the recipes' ``ingredients`` field becomes one grocery
+        item with ``recipe_uid`` set so the Paprika app groups them under the recipe
+        name in its shopping view.
+
+        All items are sent in one multipart POST (gzip-compressed JSON array) which
+        mirrors how the official Paprika app adds a recipe's ingredients to the list.
+
+        Args:
+            recipe_names_or_ids: List of recipe names or UIDs to look up in the cache.
+            list_name_or_id: Target grocery list name or UID. Uses the account's
+                default list when omitted.
+
+        Returns:
+            Dict with keys:
+                ``recipe_names`` (list of str), ``item_count`` (int),
+                ``list_uid`` (str), ``items`` (list of created grocery dicts).
+
+        Raises:
+            RecipeNotFoundError: If any recipe cannot be resolved.
+            GroceryListNotFoundError: If the target list doesn't exist.
+            PaprikaAPIError: On network / auth failures.
+        """
+        # Ensure cache is ready (warm-up may still be running at startup).
+        if not self._cache_ready.is_set():
+            await self._cache_ready.wait()
+
+        # --- Resolve recipes ---
+        recipes_cache = [
+            r for r in self._recipe_cache.values()
+            if not r.get("in_trash", False)
+        ]
+        
+        recipe_names = []
+        ingredient_lines_per_recipe = []
+
+        for query in recipe_names_or_ids:
+            recipe = self._resolve_fuzzy(query, recipes_cache)
+            if recipe is None:
+                raise RecipeNotFoundError(
+                    f"I can't find a recipe called '{query}'. "
+                    "Try listing your recipes to find the exact name."
+                )
+
+            recipe_uid = recipe["uid"]
+            recipe_name = recipe.get("name", recipe_uid)
+            recipe_names.append(recipe_name)
+
+            raw_ingredients: str = recipe.get("ingredients", "") or ""
+            lines = [line.strip() for line in raw_ingredients.splitlines() if line.strip()]
+
+            if not lines:
+                raise InvalidArgumentError(
+                    f"The recipe '{recipe_name}' has no ingredients listed."
+                )
+            
+            ingredient_lines_per_recipe.append((recipe_uid, lines))
+
+        # --- Resolve list ---
+        resolved_list_uid = await self._resolve_list_uid(list_name_or_id)
+
+        # --- Build grocery objects ---
+        grocery_items = []
+        for recipe_uid, lines in ingredient_lines_per_recipe:
+            for line in lines:
+                grocery_items.append({
+                    "uid": self._generate_uuid().lower(),
+                    "name": line,
+                    "ingredient": line,
+                    "quantity": "",
+                    "instruction": "",
+                    "list_uid": resolved_list_uid,
+                    "aisle": "",          # Paprika auto-assigns based on ingredient
+                    "order_flag": 0,
+                    "purchased": False,
+                    "separate": False,
+                    "recipe_uid": recipe_uid,
+                    "recipe": None,       # Populated server-side by Paprika
+                })
+
+        # --- Single bulk POST ---
+        if grocery_items:
+            gzipped_data = self._gzip_json(grocery_items)
+            form_data = aiohttp.FormData()
+            form_data.add_field(
+                "data", gzipped_data,
+                content_type="application/octet-stream",
+                filename="data.gz",
+            )
+            await self._make_authenticated_request("POST", "/sync/groceries", data=form_data)
+
+        logger.info(
+            "Added %d ingredients for %d recipes to list %s",
+            len(grocery_items), len(recipe_names), resolved_list_uid,
+        )
+        return {
+            "recipe_names": recipe_names,
+            "item_count": len(grocery_items),
+            "list_uid": resolved_list_uid,
+            "items": grocery_items,
+        }
 
     async def remove_grocery_item(self, item_name_or_id: str, list_name_or_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -1032,6 +1171,108 @@ class PaprikaClient:
         logger.info(f"Marked grocery as purchased: {updated_uid}")
 
         return {"uid": item["uid"], "name": item["name"], "list_uid": item.get("list_uid", "unknown")}
+
+    async def plan_meals(
+        self,
+        requests: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Add one or more recipes to the Paprika meal planner.
+
+        Args:
+            requests: List of dicts, each with keys:
+                - ``recipe_name_or_id`` (str)
+                - ``date`` (str in YYYY-MM-DD format)
+                - ``meal_type`` (optional str, defaults to "dinner")
+
+        Returns:
+            List of dicts with keys ``uid``, ``recipe_name``, ``recipe_uid``,
+            ``date``, ``meal_type``.
+
+        Raises:
+            RecipeNotFoundError: If any recipe cannot be resolved.
+            InvalidArgumentError: If ``date`` or ``meal_type`` is invalid.
+            PaprikaAPIError: On network / auth failures.
+        """
+        if not requests:
+            return []
+
+        # Ensure recipe cache is warm
+        if not self._cache_ready.is_set():
+            await self._cache_ready.wait()
+
+        # Resolve recipe from cache
+        recipes = [
+            r for r in self._recipe_cache.values()
+            if not r.get("in_trash", False)
+        ]
+        
+        meal_objs = []
+        results = []
+
+        for req in requests:
+            recipe_query = req.get("recipe_name_or_id", "")
+            date_str = req.get("date", "")
+            meal_type = req.get("meal_type", "dinner").lower().strip()
+
+            if meal_type not in MEAL_TYPE_MAP:
+                raise InvalidArgumentError(
+                    f"Unknown meal type '{meal_type}'. "
+                    f"Use one of: {', '.join(MEAL_TYPE_MAP)}."
+                )
+            type_int = MEAL_TYPE_MAP[meal_type]
+
+            try:
+                from datetime import datetime as _dt
+                _dt.strptime(date_str, "%Y-%m-%d")
+            except ValueError:
+                raise InvalidArgumentError(
+                    f"Invalid date '{date_str}'. Use YYYY-MM-DD format (e.g. 2026-07-05)."
+                )
+
+            recipe = self._resolve_fuzzy(recipe_query, recipes)
+            if recipe is None:
+                raise RecipeNotFoundError(
+                    f"I can't find a recipe called '{recipe_query}'. "
+                    "Try listing your recipes to find the exact name."
+                )
+
+            recipe_uid = recipe["uid"]
+            recipe_name = recipe.get("name", recipe_uid)
+            meal_uid = self._generate_uuid()
+
+            meal_objs.append({
+                "uid": meal_uid,
+                "recipe_uid": recipe_uid,
+                "date": f"{date_str} 00:00:00",
+                "type": type_int,
+                "name": recipe_name,
+                "order_flag": 0,
+                "type_uid": "",
+                "scale": None,
+                "is_ingredient": False,
+                "deleted": False,
+            })
+            results.append({
+                "uid": meal_uid,
+                "recipe_name": recipe_name,
+                "recipe_uid": recipe_uid,
+                "date": date_str,
+                "meal_type": meal_type,
+            })
+
+        # Single bulk POST
+        gzipped_data = self._gzip_json(meal_objs)
+        form_data = aiohttp.FormData()
+        form_data.add_field(
+            "data", gzipped_data,
+            content_type="application/octet-stream",
+            filename="data.gz",
+        )
+        await self._make_authenticated_request("POST", "/sync/meals", data=form_data)
+
+        logger.info(f"Planned {len(meal_objs)} meals.")
+        return results
 
     async def close(self):
         """Close the HTTP session."""
