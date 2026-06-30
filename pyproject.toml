@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pre-commit"]
+dev = ["pytest", "pytest-asyncio", "pre-commit"]
 
 [project.scripts]
 paprika-mcp = "server:run_server"
@@ -33,3 +33,9 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=9.0",
+    "pytest-asyncio>=1.0",
+]

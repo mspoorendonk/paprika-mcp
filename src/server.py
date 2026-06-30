@@ -327,7 +327,7 @@ async def add_grocery_item(
     name: Annotated[str, Field(description="The display name of the grocery item")],
     ingredient: Annotated[str, Field(description="The matched ingredient name (usually identical to name)")],
     quantity: Annotated[str, Field(description="Quantity info (e.g. '1', '500g', '2 cups')")] = "",
-    instruction: Annotated[str, Field(description="Additional instructions for the item")] = "",
+    instruction: Annotated[str, Field(description="Additional instructions for the item, shown on the grocery list")] = "",
     aisle: Annotated[str, Field(description="Grocery section/aisle")] = "",
     list_name_or_id: Annotated[str, Field(description="Name or ID of the list to add to (default list if omitted)")] = "",
 ):
