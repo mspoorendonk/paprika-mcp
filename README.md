@@ -40,8 +40,8 @@ Supported agents:
 
 ```bash
 # Clone the repository
-git clone https://github.com/sandordaroczi/paprika-mcp-python-server.git
-cd paprika-mcp-python-server
+git clone https://github.com/mspoorendonk/paprika-mcp.git
+cd paprika-mcp
 
 # Install uv (if you don't have it already)
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -88,7 +88,7 @@ Add the MCP server configuration:
   "mcpServers": {
     "paprika": {
       "command": "/path/to/your/.venv/bin/python",
-      "args": ["/path/to/paprika-mcp-python-server/src/server.py"],
+      "args": ["/path/to/paprika-mcp/src/server.py"],
       "env": {
         "PAPRIKA_USERNAME": "your_email@example.com",
         "PAPRIKA_PASSWORD": "your_password"
@@ -203,6 +203,10 @@ Remove choco from my grocery list.
 | `get_groceries` | List unchecked grocery items on the Paprika grocery list (set `include_purchased=true` to include checked items) |
 | `add_grocery_item` | Add a new item to the Paprika grocery list |
 | `remove_grocery_item` | Remove an item from Paprika groceries. Searches all lists by default; strict matching (exact UID, exact name, or unambiguous substring). Returns the removed item's name, UID, and list UID. Ambiguous matches return an error listing candidates. |
+| `add_recipes_to_grocery_list` | Add all ingredients from one or more recipes to the grocery list in a single bulk request |
+| `plan_meals` | Schedule one or more recipes on the Paprika meal planner for specific dates and meal types |
+| `get_plan` | View meals in the Paprika meal planner across past days (default 30 days back) and upcoming days (default 14 days ahead) |
+| `GetUsageStats` | Usage aggregates from the audit log: calls per client, per tool, per day, error rate, and last-seen per client |
 
 ### Error contract
 
@@ -322,6 +326,12 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Changelog
 
+### v1.3.0 (2026-10-03)
+- **Home Assistant compatibility**: Added automatic JSON Schema definition inlining (`_inline_schema_defs`) across all FastMCP tools. Resolves Pydantic `$defs` / `$ref` structures into self-contained schemas, fixing the `ValueError: Invalid schema, missing type` crash during Home Assistant's `voluptuous-openapi` schema conversion on setup.
+- **Meal history & planning (`get_plan`)**: Added `get_plan` tool to inspect the Paprika meal planner across past days (history of meals eaten, default 30 days back) and upcoming days (planned meals, default 14 days ahead), with voice-friendly date grouping.
+- **Regression test suite**: Added `tests/test_homeassistant_compatibility.py` verifying all registered tool schemas convert cleanly with `voluptuous-openapi`, and `tests/test_get_plan.py` covering calendar date range filtering and formatting.
+- **Client compatibility**: Restored `add_recipe_to_grocery_list` backwards-compatibility alias on `PaprikaClient` and updated documentation / repository clone URLs.
+
 ### v1.2.0 (2026-05-08)
 - Voice-friendly error contract: typed exception hierarchy with stable `structuredContent.code` values (`paprika_unreachable`, `paprika_auth_failed`, `paprika_rate_limited`, `grocery_not_found`, `grocery_ambiguous`, `grocery_list_not_found`, `recipe_not_found`, `invalid_argument`, `paprika_error`) and TTS-friendly user-visible messages. See `specs.md` Scenario 9.
 - Lazy authentication: a startup auth blip no longer kills the server; it surfaces as a friendly error on the first tool call.
@@ -347,7 +357,7 @@ Add the MCP server to your VS Code `settings.json`:
 {
   "github.copilot.chat.mcpServers": {
     "paprika-local": {
-      "command": "/path/to/paprika-mcp-python-server/.venv/bin/paprika-mcp-python-server"
+      "command": "/path/to/paprika-mcp/.venv/bin/paprika-mcp"
     },
     "paprika-remote": {
       "url": "https://<your-domain>/<prefix>/mcp"
@@ -366,7 +376,7 @@ OAuth flow and opens a browser for the Google login on first connect:
 claude mcp add --transport http paprika https://<your-domain>/paprika/mcp
 ```
 
-For a local stdio install: `claude mcp add paprika -- /path/to/paprika-mcp-python-server/.venv/bin/paprika-mcp-python-server`.
+For a local stdio install: `claude mcp add paprika -- /path/to/paprika-mcp/.venv/bin/paprika-mcp`.
 
 ### Configure Google Antigravity
 
@@ -390,7 +400,7 @@ Gemini CLI's `settings.json` distinguishes streamable HTTP (`httpUrl`) from SSE 
 {
   "mcpServers": {
     "paprika-local": {
-      "command": "/path/to/paprika-mcp-python-server/.venv/bin/paprika-mcp-python-server"
+      "command": "/path/to/paprika-mcp/.venv/bin/paprika-mcp"
     },
     "paprika-remote": {
       "httpUrl": "https://<your-domain>/paprika/mcp"

@@ -39,3 +39,7 @@ dev-dependencies = [
     "pytest>=9.0",
     "pytest-asyncio>=1.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

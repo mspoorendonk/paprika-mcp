@@ -252,6 +252,28 @@ Catch-all for any other non-2xx Paprika response (e.g. 5xx, malformed JSON). The
 - **API**: POSTs a gzip-compressed JSON array to `POST /v2/sync/meals/`. There is no per-uid meals endpoint; all meal plan writes go to the array endpoint. `type_uid` is sent as an empty string (Paprika ignores it). `date` uses `"YYYY-MM-DD 00:00:00"` format.
 - **Meal type integers**: `breakfast=0`, `lunch=1`, `dinner=2`, `snack=3` (as used in the Paprika sync API).
 
+### Scenario 12 — Reviewing past meals and upcoming meal plans
+
+> **User:** "What have I eaten the past few days?"
+
+- LLM calls `get_plan` with default arguments (or `days_back=7`, `days_ahead=0`).
+- Server queries `GET /v2/sync/meals/`, filters by date range around today, and formats the meal list.
+- **Assistant:** "Over the past few days you had: on Thursday Courgettesoep with salmon, on Friday Kip Kerrie, and on Saturday Thai basil chicken."
+
+> **User:** "What's planned for dinner this week?"
+
+- LLM calls `get_plan` with `days_back=0`, `days_ahead=7`.
+- **Assistant:** "This week you have planned: on Monday Spaghetti Bolognese, and on Wednesday Mexicaanse wraps."
+
+#### Tool contract
+
+- **Name**: `get_plan`
+- **Parameters**:
+  - `days_back` (optional, default `30`, min `0`, max `365`) — Number of past days to look back for meals eaten.
+  - `days_ahead` (optional, default `14`, min `0`, max `365`) — Number of future days to look ahead for planned meals.
+- **Returns**: Plain-text overview split into past meals and upcoming meals, with day of the week, meal type, and recipe names.
+- **Errors**: Standard connectivity codes.
+- **API**: Queries `GET /v2/sync/meals/`.
 
 
 ## MCP Client Requirements & Transport Protocols

@@ -27,6 +27,7 @@ MEAL_TYPE_MAP: dict[str, int] = {
     "dinner": 2,
     "snack": 3,
 }
+INV_MEAL_TYPE_MAP: dict[int, str] = {v: k for k, v in MEAL_TYPE_MAP.items()}
 
 
 class PaprikaAPIError(Exception):
@@ -997,6 +998,22 @@ class PaprikaClient:
         logger.info(f"Successfully created grocery: {name} (recipe_uid={recipe_uid})")
         return grocery_obj
 
+    async def add_recipe_to_grocery_list(
+        self,
+        recipe_name_or_id: str,
+        list_name_or_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Backwards compatibility alias for adding a single recipe's ingredients.
+        """
+        res = await self.add_recipes_to_grocery_list(
+            [recipe_name_or_id], list_name_or_id=list_name_or_id
+        )
+        res["recipe_name"] = res["recipe_names"][0]
+        if res.get("items"):
+            res["recipe_uid"] = res["items"][0]["recipe_uid"]
+        return res
+
     async def add_recipes_to_grocery_list(
         self,
         recipe_names_or_ids: List[str],
@@ -1273,6 +1290,65 @@ class PaprikaClient:
 
         logger.info(f"Planned {len(meal_objs)} meals.")
         return results
+
+    async def get_plan(
+        self,
+        days_back: int = 30,
+        days_ahead: int = 14,
+        reference_date: Optional[Any] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get meals from the Paprika meal planner within a date window around today.
+
+        Args:
+            days_back: Number of past days to include (default 30).
+            days_ahead: Number of future days to include (default 14).
+            reference_date: Optional reference date (defaults to today).
+
+        Returns:
+            List of meal dicts with keys: ``uid``, ``recipe_uid``, ``name``,
+            ``date`` (YYYY-MM-DD), ``meal_type`` (str), sorted chronologically.
+        """
+        if days_back < 0:
+            raise InvalidArgumentError("days_back must be greater than or equal to 0.")
+        if days_ahead < 0:
+            raise InvalidArgumentError("days_ahead must be greater than or equal to 0.")
+
+        res = await self._make_authenticated_request("GET", "/sync/meals")
+        raw_meals = res.get("result", [])
+
+        from datetime import datetime, date, timedelta
+        ref = reference_date if reference_date is not None else date.today()
+        start_date = ref - timedelta(days=days_back)
+        end_date = ref + timedelta(days=days_ahead)
+
+        filtered_meals = []
+        for meal in raw_meals:
+            if meal.get("deleted", False):
+                continue
+
+            date_raw = meal.get("date", "")
+            try:
+                meal_date = datetime.strptime(date_raw[:10], "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                continue
+
+            if start_date <= meal_date <= end_date:
+                type_int = meal.get("type", 2)
+                meal_type_str = INV_MEAL_TYPE_MAP.get(type_int, "dinner")
+                filtered_meals.append({
+                    "uid": meal.get("uid"),
+                    "recipe_uid": meal.get("recipe_uid"),
+                    "name": meal.get("name", "Unnamed meal"),
+                    "date": meal_date.strftime("%Y-%m-%d"),
+                    "meal_type": meal_type_str,
+                    "order_flag": meal.get("order_flag", 0),
+                })
+
+        type_order = {"breakfast": 0, "lunch": 1, "dinner": 2, "snack": 3}
+        filtered_meals.sort(key=lambda m: (m["date"], type_order.get(m["meal_type"], 99), m["order_flag"]))
+
+        return filtered_meals
 
     async def close(self):
         """Close the HTTP session."""

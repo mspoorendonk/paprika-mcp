@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import logging
 import sys
 from typing import Annotated, Optional
@@ -453,10 +454,118 @@ async def plan_meals(
 
 
 @mcp.tool()
+@audit.audited("get_plan")
+@_tool_errors
+async def get_plan(
+    days_back: Annotated[int, Field(
+        default=30,
+        ge=0,
+        le=365,
+        description="Number of past days to look back for meals eaten. Defaults to 30 days.",
+    )] = 30,
+    days_ahead: Annotated[int, Field(
+        default=14,
+        ge=0,
+        le=365,
+        description="Number of future days to look ahead for planned meals. Defaults to 14 days.",
+    )] = 14,
+) -> str:
+    """Get meal plan entries from Paprika across past days (history) and upcoming days (plans).
+
+    Use this tool whenever the user asks about meal history ("What did I eat this week?",
+    "When did we last have curry?", "Did I eat pizza recently?") or future meal plans
+    ("What's for dinner tomorrow?", "What meals are planned?").
+
+    Defaults are designed to be practical: 30 days in the past (to check recent meal history)
+    and 14 days in the future (to cover the next two weeks of planning). You can set
+    days_back=0 to only look at upcoming meals, or days_ahead=0 to only look at past meals.
+    """
+    from datetime import date, datetime, timedelta
+    today = date.today()
+    meals = await _client_or_raise().get_plan(days_back=days_back, days_ahead=days_ahead)
+
+    if not meals:
+        start_str = (today - timedelta(days=days_back)).strftime('%Y-%m-%d')
+        end_str = (today + timedelta(days=days_ahead)).strftime('%Y-%m-%d')
+        return (
+            f"No meals found in the meal plan between {start_str} and {end_str} "
+            f"({days_back} days back, {days_ahead} days ahead; today is {today.strftime('%Y-%m-%d')})."
+        )
+
+    past_lines = []
+    upcoming_lines = []
+
+    for m in meals:
+        m_date_str = m["date"]
+        try:
+            m_date = datetime.strptime(m_date_str, "%Y-%m-%d").date()
+            weekday = m_date.strftime("%A")
+            line = f"- {m_date_str} ({weekday}, {m['meal_type']}): {m['name']}"
+        except Exception:
+            m_date = today
+            line = f"- {m_date_str} ({m['meal_type']}): {m['name']}"
+
+        if m_date < today:
+            past_lines.append(line)
+        elif m_date == today:
+            upcoming_lines.append(line + " [TODAY]")
+        else:
+            upcoming_lines.append(line)
+
+    sections = [f"Meal planner entries (today is {today.strftime('%A, %Y-%m-%d')}):"]
+    if past_lines:
+        sections.append(f"\nPast meals (last {days_back} days):\n" + "\n".join(past_lines))
+    if upcoming_lines:
+        sections.append(f"\nUpcoming / today's meals (next {days_ahead} days):\n" + "\n".join(upcoming_lines))
+
+    return "\n".join(sections)
+
+
+@mcp.tool()
 def GetUsageStats() -> dict:
     """Usage aggregates from the audit log: calls per client, per tool, per day,
     error rate, and last-seen per client."""
     return audit.stats()
+
+
+def _inline_schema_defs(schema: dict) -> dict:
+    """Inline all $ref pointing to #/$defs into a self-contained schema.
+
+    Home Assistant's MCP client uses voluptuous-openapi (v0.3.0), which does
+    not resolve JSON Schema $defs / $ref and crashes with:
+    ValueError: Invalid schema, missing type
+    Inlining the definitions produces a schema that works with voluptuous-openapi,
+    probatio, and other OpenAPI/JSON Schema parsers.
+    """
+    schema = copy.deepcopy(schema)
+    defs = schema.pop("$defs", {})
+    if not defs:
+        return schema
+
+    def _resolve(node):
+        if isinstance(node, dict):
+            if "$ref" in node and len(node) == 1:
+                ref = node["$ref"]
+                if ref.startswith("#/$defs/"):
+                    def_name = ref[len("#/$defs/"):]
+                    if def_name in defs:
+                        return _resolve(defs[def_name])
+            return {k: _resolve(v) for k, v in node.items()}
+        elif isinstance(node, list):
+            return [_resolve(item) for item in node]
+        return node
+
+    return _resolve(schema)
+
+
+def _apply_schema_inlining():
+    for tool in mcp._tool_manager.list_tools():
+        if tool.parameters:
+            tool.parameters = _inline_schema_defs(tool.parameters)
+
+
+# Apply inlining across all registered tools
+_apply_schema_inlining()
 
 
 # ---------------------------------------------------------------------------
@@ -615,6 +724,7 @@ def run_server():
     """Synchronous entry point for the console script (`paprika-mcp`)."""
     global _client
     try:
+        _apply_schema_inlining()
         config = get_config()
         _client = PaprikaClient(
             username=config.paprika_username, password=config.paprika_password
