@@ -8,6 +8,7 @@ Paprika account:
   - list_recipes
   - get_groceries / add_grocery_item / remove_grocery_item
   - GetUsageStats (audit read-back)
+  - submit_feedback (client feedback for the developer, shared MCP standard section 10)
 
 Architecture mirrors movie-mcp (see system-administration/mcp-on-lan/specs.md):
 high-level FastMCP with `@mcp.tool()` + `@audit.audited(...)` decorators, and a
@@ -37,6 +38,7 @@ from mcp.types import CallToolResult, TextContent
 from pydantic import BaseModel, Field
 
 import audit
+import feedback as feedback_store
 import oauth_app
 from config import get_config
 from paprika_client import (
@@ -528,6 +530,18 @@ def GetUsageStats() -> dict:
     return audit.stats()
 
 
+@mcp.tool(description=feedback_store.FEEDBACK_TOOL_DESCRIPTION)
+@audit.audited("submit_feedback")
+async def submit_feedback(
+    feedback: Annotated[str, Field(description="What went wrong, is missing or is confusing.")],
+    category: Annotated[str, Field(description="bug, wrong_result, missing_feature, confusing or other.")] = "other",
+    tool: Annotated[str, Field(description="The tool this is about, if any.")] = "",
+    example: Annotated[str, Field(description="The call or answer that showed the problem, if any.")] = "",
+) -> dict:
+    user, client = oauth_app.current_identity()
+    return feedback_store.submit_feedback(feedback, category, tool or None, example or None, user=user, client=client)
+
+
 def _inline_schema_defs(schema: dict) -> dict:
     """Inline all $ref pointing to #/$defs into a self-contained schema.
 
@@ -678,6 +692,10 @@ async def _serve_http() -> None:
                 return
 
             path = scope.get("path", "")
+            if path == "/health":  # unauthenticated liveness check (shared MCP standard, section 5.3)
+                await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
+                await send({"type": "http.response.body", "body": b'{"status": "ok"}'})
+                return
             is_mcp = path in (oauth_app.MCP_PATH, oauth_app.MCP_PATH + "/")
 
             if not require_auth:

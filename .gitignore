@@ -57,3 +57,7 @@ logs/
 .pytest_cache/
 htmlcov/
 .gemini/settings.json
+
+# Client feedback (MCP standard section 10) - may contain personal content
+data/feedback.jsonl
+data/feedback_decisions.jsonl
