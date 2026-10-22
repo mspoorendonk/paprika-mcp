@@ -29,6 +29,93 @@ MEAL_TYPE_MAP: dict[str, int] = {
 }
 INV_MEAL_TYPE_MAP: dict[int, str] = {v: k for k, v in MEAL_TYPE_MAP.items()}
 
+# Keyword mapping for grocery auto-categorization into Paprika aisles.
+# Supports both Dutch and English common items.
+DEFAULT_AISLE_KEYWORDS: dict[str, list[str]] = {
+    "Produce": [
+        "appel", "appels", "peer", "peren", "banaan", "bananen", "tomaat", "tomaten", "cherrytomaat", "cherrytomaatjes",
+        "ui", "uien", "bosui", "bosuitjes", "rode ui", "sjalot", "sjalotten", "knoflook", "courgette", "aubergine",
+        "paprika", "komkommer", "sla", "ijsbergsla", "rucola", "veldsla", "spinazie", "boerenkool",
+        "broccoli", "bloemkool", "wortel", "wortels", "worteltjes", "aardappel", "aardappelen", "aardappels",
+        "zoete aardappel", "champignon", "champignons", "paddenstoel", "paddenstoelen", "citroen", "citroenen",
+        "limoen", "limoenen", "avocado", "avocados", "gember", "peper", "rode peper", "chilipeper", "peterselie",
+        "koriander", "basilicum", "munt", "rozemarijn", "tijm", "dille", "bieslook", "prei", "bleekselderij",
+        "venkel", "asperges", "mango", "aardbei", "aardbeien", "blauwe bessen", "frambozen", "sinaasappel",
+        "mandarijn", "druiven", "radijs", "fruit", "groente", "groenten", "salade", "lime", "lemon", "onion", "garlic",
+    ],
+    "Meat": [
+        "kip", "kipfilet", "kippendij", "kippendijen", "kippenvleugels", "rund", "rundergehakt",
+        "gehakt", "biefstuk", "varken", "varkenshaas", "spek", "spekjes", "bacon", "worst", "braadworst",
+        "kalkoen", "lamsvlees", "ham", "carpaccio", "vis", "zalm", "kabeljauw", "tonijn", "garnalen",
+        "scampi", "mosselen", "meat", "chicken", "beef", "pork", "fish", "salmon", "shrimp",
+    ],
+    "Dairy": [
+        "melk", "halfvolle melk", "volle melk", "karnemelk", "boter", "roomboter", "kaas", "oude kaas",
+        "jonge kaas", "belegen kaas", "parmezaan", "parmigiano", "mozzarella", "feta", "geitenkaas",
+        "cheddar", "geraspte kaas", "yoghurt", "kwark", "room", "slagroom", "kookroom", "creme fraiche",
+        "crème fraîche", "mascarpone", "ricotta", "ei", "eieren", "dairy", "milk", "cheese", "butter", "cream", "eggs", "yogurt",
+    ],
+    "Breads and Cereals": [
+        "brood", "witbrood", "bruinbrood", "volkorenbrood", "stokbrood", "ciabatta", "baguette",
+        "bolletjes", "pistolet", "pistolets", "croissant", "croissants", "wraps", "tortilla",
+        "pita", "pitabroodjes", "naan", "havermout", "muesli", "granola", "cruesli", "ontbijtgranen",
+        "cornflakes", "bread", "toast", "cereal",
+    ],
+    "Pasta, Rice and Beans": [
+        "pasta", "spaghetti", "penne", "fusilli", "tagliatelle", "macaroni", "lasagnebladen",
+        "rijst", "basmati", "zilvervliesrijst", "jasmijnrijst", "risottorijst", "noedels", "noodles",
+        "couscous", "bulgur", "quinoa", "linzen", "kikkererwten", "witte bonen", "bruine bonen",
+        "zwarte bonen", "kidneybonen", "rice", "beans", "lentils",
+    ],
+    "Baking Goods": [
+        "bloem", "tarwebloem", "zelfrijzend bakmeel", "gist", "bakpoeder", "baksoda", "vanille",
+        "vanillesuiker", "suiker", "kristalsuiker", "basterdsuiker", "poedersuiker", "cacao",
+        "cacaopoeder", "flour", "sugar", "yeast", "baking powder",
+    ],
+    "Canned and Jar Goods": [
+        "tomatenblokjes", "gepelde tomaten", "passata", "tomatenpuree", "kokosmelk", "mais",
+        "ansjovis", "olijven", "kappers", "kappertjes", "augurken", "ingeblikt", "blik",
+    ],
+    "Oils and Dressings": [
+        "olijfolie", "zonnebloemolie", "sesamolie", "kokosolie", "arachideolie", "azijn",
+        "balsamico", "wittewijnazijn", "rodewijnazijn", "appelazijn", "mayonaise", "fritessaus",
+        "vinaigrette", "dressing", "oil", "olive oil", "vinegar",
+    ],
+    "Sauces and Condiments": [
+        "sojasaus", "ketjap", "ketjap manis", "vissaus", "oestersaus", "sriracha", "sambal",
+        "chilisaus", "ketchup", "mosterd", "currypasta", "pesto", "mayo", "worcestershire",
+        "pindakaas", "jam", "honing", "nutella", "sauce",
+    ],
+    "Spices and Seasonings": [
+        "zout", "zeezout", "zwarte peper", "witte peper", "paprikapoeder", "gerookt paprikapoeder",
+        "komijn", "komijnpoeder", "kurkuma", "korianderpoeder", "kerrie", "kerriepoeder", "kaneel",
+        "nootmuskaat", "kruidnagel", "oregano", "tijm", "chilivlokken", "bouillon",
+        "bouillonblokje", "bouillonblokjes", "kippenbouillon", "groentebouillon", "runderbouillon",
+        "spice", "seasoning", "salt", "pepper", "cinnamon",
+    ],
+    "Snacks": [
+        "chocola", "chocolade", "chips", "tortillachips", "noten", "cashewnoten", "walnoten",
+        "amandelen", "pinda's", "borrelnootjes", "koek", "koekjes", "crackers", "popcorn", "snoep",
+        "snack", "chocolate", "cookies",
+    ],
+    "Beverages": [
+        "koffie", "koffiebonen", "thee", "frisdrank", "cola", "sinas", "water", "bruiswater",
+        "appelsap", "sinaasappelsap", "sap", "tonic", "smoothie", "coffee", "tea", "juice", "soda",
+    ],
+    "Beer, Wine and Spirits": [
+        "bier", "pils", "speciaalbier", "wijn", "rode wijn", "witte wijn", "rosé", "prosecco",
+        "champagne", "gin", "rum", "whisky", "vodka", "beer", "wine",
+    ],
+    "Frozen Foods": [
+        "diepvries", "diepvrieserwtjes", "doperwten", "ijs", "roomijs", "diepvriespizza",
+        "bladerdeeg", "frozen",
+    ],
+    "Schoonmaak": [
+        "afwasmiddel", "vaatwastabletten", "allesreiniger", "bleek", "wasmiddel", "wasverzachter",
+        "keukenrol", "toiletpapier", "wc-papier", "vuilniszakken", "schoonmaakazijn", "spons", "sponsjes",
+    ],
+}
+
 
 class PaprikaAPIError(Exception):
     """Base class for all Paprika MCP errors.
@@ -132,6 +219,9 @@ class PaprikaClient:
         self._recipe_index_fingerprint: Optional[str] = None
         self._cache_lock = asyncio.Lock()
         self._cache_ready = asyncio.Event()
+
+        # Aisle mapping cache
+        self._aisle_cache: Optional[Dict[str, str]] = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create an aiohttp session."""
@@ -461,6 +551,9 @@ class PaprikaClient:
             "POST", f"/sync/recipe/{recipe['uid']}/", data=data
         )
         logger.info(f"Successfully created recipe: {name}")
+        self._recipe_cache[recipe["uid"]] = recipe
+        self._recipe_index_fingerprint = ""
+        self._cache_ready.set()
         return recipe
 
     async def update_recipe(
@@ -521,6 +614,8 @@ class PaprikaClient:
             "POST", f"/sync/recipe/{uid}/", data=data
         )
         logger.info(f"Successfully updated recipe: {name}")
+        self._recipe_cache[recipe["uid"]] = recipe
+        self._recipe_index_fingerprint = ""
         return recipe
 
     async def update_recipe_partial(self, uid: str, **kwargs) -> Dict[str, Any]:
@@ -575,6 +670,8 @@ class PaprikaClient:
         logger.info(
             f"Successfully partially updated recipe: {existing_recipe['name']}"
         )
+        self._recipe_cache[existing_recipe["uid"]] = existing_recipe
+        self._recipe_index_fingerprint = ""
         return existing_recipe
 
     @staticmethod
@@ -742,6 +839,136 @@ class PaprikaClient:
         recipes.sort(key=lambda r: (r.get("name") or "").lower())
         return recipes[:limit]
 
+    def _resolve_recipe(self, query: str, recipes: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Resolve a query to a recipe strictly and safely:
+        1. Exact UID
+        2. Case-insensitive exact name
+        3. Unambiguous substring (query at least 3 chars)
+        4. High-confidence typo match (SequenceMatcher score >= 0.85)
+
+        Raises RecipeNotFoundError or AmbiguousMatchError.
+        """
+        if not query or not recipes:
+            raise RecipeNotFoundError(
+                f"I can't find a recipe called '{query}'. "
+                "Try listing your recipes to find the exact name."
+            )
+
+        # 1. Exact UID
+        for r in recipes:
+            if r.get("uid") == query:
+                return r
+
+        # 2. Case-insensitive exact name
+        query_lower = query.lower().strip()
+        exact = [r for r in recipes if (r.get("name") or "").lower().strip() == query_lower]
+        if len(exact) == 1:
+            return exact[0]
+        if len(exact) > 1:
+            names = ", ".join(f"'{r.get('name')}'" for r in exact)
+            raise AmbiguousMatchError(
+                f"Multiple recipes match '{query}': {names}. Which one?",
+                candidates=[{"uid": r["uid"], "name": r.get("name")} for r in exact],
+            )
+
+        # 3. Unambiguous substring match
+        if len(query_lower) >= 3:
+            subs = [r for r in recipes if query_lower in (r.get("name") or "").lower()]
+            if len(subs) == 1:
+                return subs[0]
+            if len(subs) > 1:
+                names = ", ".join(f"'{r.get('name')}'" for r in subs)
+                raise AmbiguousMatchError(
+                    f"Multiple recipes match '{query}': {names}. Which one?",
+                    candidates=[{"uid": r["uid"], "name": r.get("name")} for r in subs],
+                )
+
+        # 4. High-confidence typo match
+        candidates: List[tuple[float, Dict[str, Any]]] = []
+        for r in recipes:
+            name = (r.get("name") or "").lower()
+            score = difflib.SequenceMatcher(None, query_lower, name).ratio()
+            if score >= 0.85:
+                candidates.append((score, r))
+
+        if candidates:
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            if len(candidates) == 1 or (candidates[0][0] - candidates[1][0] >= 0.08):
+                logger.info(
+                    f"Resolved typo in recipe name '{query}' -> '{candidates[0][1].get('name')}' "
+                    f"(score={candidates[0][0]:.2f})"
+                )
+                return candidates[0][1]
+            names = ", ".join(f"'{c[1].get('name')}'" for c in candidates)
+            raise AmbiguousMatchError(
+                f"Multiple recipes match '{query}': {names}. Which one?",
+                candidates=[{"uid": c[1]["uid"], "name": c[1].get("name")} for c in candidates],
+            )
+
+        raise RecipeNotFoundError(
+            f"I can't find a recipe called '{query}'. "
+            "Try listing your recipes to find the exact name."
+        )
+
+    async def categorize_grocery_item(self, name: str, ingredient: str = "") -> str:
+        """
+        Determine the most appropriate aisle/category for a grocery item.
+        First checks user's past grocery history from Paprika, then keyword matching,
+        and finally defaults to 'Miscellaneous'. Never returns an empty string.
+        """
+        text = f"{name} {ingredient}".lower().strip()
+        if not text:
+            return "Miscellaneous"
+
+        # 1. Populate aisle cache from past groceries if not yet loaded
+        if self._aisle_cache is None:
+            self._aisle_cache = {}
+            try:
+                past_groceries = await self.get_groceries(include_purchased=True)
+                for g in past_groceries:
+                    aisle = g.get("aisle")
+                    if aisle:
+                        g_name = (g.get("name") or "").lower().strip()
+                        g_ing = (g.get("ingredient") or "").lower().strip()
+                        if g_name:
+                            self._aisle_cache[g_name] = aisle
+                        if g_ing:
+                            self._aisle_cache[g_ing] = aisle
+            except Exception as e:
+                logger.debug(f"Could not load past groceries for aisle cache: {e}")
+
+        # Exact match in cache
+        if self._aisle_cache:
+            n_clean = name.lower().strip()
+            if n_clean in self._aisle_cache:
+                return self._aisle_cache[n_clean]
+            i_clean = ingredient.lower().strip()
+            if i_clean in self._aisle_cache:
+                return self._aisle_cache[i_clean]
+
+            # Word match from cache
+            import re
+            words = set(re.findall(r"\b\w{3,}\b", text))
+            for word in words:
+                if word in self._aisle_cache:
+                    return self._aisle_cache[word]
+
+        # 2. Check predefined keyword mappings
+        import re
+        words = set(re.findall(r"\b\w+\b", text))
+        for aisle, keywords in DEFAULT_AISLE_KEYWORDS.items():
+            for kw in keywords:
+                kw_lower = kw.lower()
+                if " " in kw_lower:
+                    if kw_lower in text:
+                        return aisle
+                else:
+                    if kw_lower in words:
+                        return aisle
+
+        # 3. Fallback to Miscellaneous so items are never uncategorized
+        return "Miscellaneous"
 
     def _resolve_fuzzy(self, query: str, items: List[Dict[str, Any]], name_key: str = "name", id_key: str = "uid") -> Optional[Dict[str, Any]]:
         """Resolve a query string to an item using ID, exact name, substring, or fuzzy matching."""
@@ -973,6 +1200,9 @@ class PaprikaClient:
         """
         resolved_list_uid = await self._resolve_list_uid(list_name_or_id)
 
+        if not aisle:
+            aisle = await self.categorize_grocery_item(name=name, ingredient=ingredient)
+
         uid = self._generate_uuid().lower()
 
         grocery_obj = {
@@ -995,7 +1225,7 @@ class PaprikaClient:
         data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
 
         await self._make_authenticated_request("POST", "/sync/groceries", data=data)
-        logger.info(f"Successfully created grocery: {name} (recipe_uid={recipe_uid})")
+        logger.info(f"Successfully created grocery: {name} (aisle={aisle}, recipe_uid={recipe_uid})")
         return grocery_obj
 
     async def add_recipe_to_grocery_list(
@@ -1045,6 +1275,13 @@ class PaprikaClient:
             GroceryListNotFoundError: If the target list doesn't exist.
             PaprikaAPIError: On network / auth failures.
         """
+        # Refresh recipe cache before resolving
+        try:
+            await self.refresh_recipe_cache()
+        except PaprikaAPIError:
+            if not self._recipe_cache:
+                raise
+
         # Ensure cache is ready (warm-up may still be running at startup).
         if not self._cache_ready.is_set():
             await self._cache_ready.wait()
@@ -1059,12 +1296,7 @@ class PaprikaClient:
         ingredient_lines_per_recipe = []
 
         for query in recipe_names_or_ids:
-            recipe = self._resolve_fuzzy(query, recipes_cache)
-            if recipe is None:
-                raise RecipeNotFoundError(
-                    f"I can't find a recipe called '{query}'. "
-                    "Try listing your recipes to find the exact name."
-                )
+            recipe = self._resolve_recipe(query, recipes_cache)
 
             recipe_uid = recipe["uid"]
             recipe_name = recipe.get("name", recipe_uid)
@@ -1087,6 +1319,7 @@ class PaprikaClient:
         grocery_items = []
         for recipe_uid, recipe_name, lines in ingredient_lines_per_recipe:
             for line in lines:
+                item_aisle = await self.categorize_grocery_item(name=line, ingredient=line)
                 grocery_items.append({
                     "uid": self._generate_uuid().lower(),
                     "name": line,
@@ -1094,7 +1327,7 @@ class PaprikaClient:
                     "quantity": "",
                     "instruction": "",
                     "list_uid": resolved_list_uid,
-                    "aisle": "",          # Paprika auto-assigns based on ingredient
+                    "aisle": item_aisle,
                     "order_flag": 0,
                     "purchased": False,
                     "separate": False,
@@ -1214,6 +1447,13 @@ class PaprikaClient:
         if not requests:
             return []
 
+        # Refresh recipe cache before resolving
+        try:
+            await self.refresh_recipe_cache()
+        except PaprikaAPIError:
+            if not self._recipe_cache:
+                raise
+
         # Ensure recipe cache is warm
         if not self._cache_ready.is_set():
             await self._cache_ready.wait()
@@ -1247,12 +1487,7 @@ class PaprikaClient:
                     f"Invalid date '{date_str}'. Use YYYY-MM-DD format (e.g. 2026-07-05)."
                 )
 
-            recipe = self._resolve_fuzzy(recipe_query, recipes)
-            if recipe is None:
-                raise RecipeNotFoundError(
-                    f"I can't find a recipe called '{recipe_query}'. "
-                    "Try listing your recipes to find the exact name."
-                )
+            recipe = self._resolve_recipe(recipe_query, recipes)
 
             recipe_uid = recipe["uid"]
             recipe_name = recipe.get("name", recipe_uid)
@@ -1349,6 +1584,399 @@ class PaprikaClient:
         filtered_meals.sort(key=lambda m: (m["date"], type_order.get(m["meal_type"], 99), m["order_flag"]))
 
         return filtered_meals
+
+    async def delete_planned_meal(
+        self,
+        entry_id: Optional[str] = None,
+        date: Optional[str] = None,
+        meal_type: Optional[str] = None,
+        recipe_name_or_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Delete a planned meal from the Paprika meal planner.
+
+        Args:
+            entry_id: UID of the planned meal entry (from get_plan).
+            date: Date in YYYY-MM-DD format to match planned meals.
+            meal_type: Optional meal type (breakfast, lunch, dinner, snack).
+            recipe_name_or_id: Optional recipe name or UID to narrow down matching.
+
+        Returns:
+            Dict with deleted meal info: uid, name, date, meal_type, recipe_uid.
+
+        Raises:
+            InvalidArgumentError: If arguments are missing or invalid, or no match found.
+            AmbiguousMatchError: If multiple planned meals match the criteria.
+            PaprikaAPIError: On network or auth failures.
+        """
+        if not entry_id and not date:
+            raise InvalidArgumentError(
+                "Please provide either 'entry_id' or 'date' to identify the planned meal to delete."
+            )
+
+        res = await self._make_authenticated_request("GET", "/sync/meals")
+        raw_meals = res.get("result", [])
+        active_meals = [m for m in raw_meals if not m.get("deleted", False)]
+
+        matched_meal = None
+        if entry_id:
+            for m in active_meals:
+                if m.get("uid") == entry_id:
+                    matched_meal = m
+                    break
+            if not matched_meal:
+                raise InvalidArgumentError(f"No active planned meal found with entry ID '{entry_id}'.")
+        else:
+            try:
+                from datetime import datetime as _dt
+                _dt.strptime(date, "%Y-%m-%d")
+            except (ValueError, TypeError):
+                raise InvalidArgumentError(
+                    f"Invalid date '{date}'. Use YYYY-MM-DD format (e.g. 2026-07-05)."
+                )
+
+            candidates = [m for m in active_meals if (m.get("date") or "")[:10] == date]
+
+            if meal_type:
+                mt_clean = meal_type.lower().strip()
+                if mt_clean not in MEAL_TYPE_MAP:
+                    raise InvalidArgumentError(
+                        f"Unknown meal type '{meal_type}'. Use one of: {', '.join(MEAL_TYPE_MAP)}."
+                    )
+                type_int = MEAL_TYPE_MAP[mt_clean]
+                candidates = [m for m in candidates if m.get("type") == type_int]
+
+            if recipe_name_or_id:
+                r_query = recipe_name_or_id.lower().strip()
+                candidates = [
+                    m for m in candidates
+                    if m.get("recipe_uid") == recipe_name_or_id
+                    or r_query in (m.get("name") or "").lower()
+                ]
+
+            if not candidates:
+                descr = f"on {date}"
+                if meal_type:
+                    descr += f" ({meal_type})"
+                if recipe_name_or_id:
+                    descr += f" for '{recipe_name_or_id}'"
+                raise InvalidArgumentError(f"No active planned meal found {descr}.")
+
+            if len(candidates) > 1:
+                summary = ", ".join(
+                    f"'{m.get('name')}' (id: {m.get('uid')}, type: {INV_MEAL_TYPE_MAP.get(m.get('type', 2), 'dinner')})"
+                    for m in candidates
+                )
+                raise AmbiguousMatchError(
+                    f"Multiple planned meals found on {date}: {summary}. Please specify the entry_id or meal_type.",
+                    candidates=[
+                        {
+                            "entry_id": m.get("uid"),
+                            "name": m.get("name"),
+                            "meal_type": INV_MEAL_TYPE_MAP.get(m.get("type", 2), "dinner"),
+                        }
+                        for m in candidates
+                    ],
+                )
+
+            matched_meal = candidates[0]
+
+        matched_meal["deleted"] = True
+        gzipped_data = self._gzip_json([matched_meal])
+        data = aiohttp.FormData()
+        data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
+        await self._make_authenticated_request("POST", "/sync/meals", data=data)
+
+        m_date = (matched_meal.get("date") or "")[:10]
+        m_type = INV_MEAL_TYPE_MAP.get(matched_meal.get("type", 2), "dinner")
+        logger.info(f"Deleted planned meal {matched_meal.get('uid')} ({matched_meal.get('name')} on {m_date})")
+
+        return {
+            "uid": matched_meal.get("uid"),
+            "name": matched_meal.get("name"),
+            "date": m_date,
+            "meal_type": m_type,
+            "recipe_uid": matched_meal.get("recipe_uid"),
+        }
+
+    async def move_planned_meal(
+        self,
+        to_date: str,
+        entry_id: Optional[str] = None,
+        date: Optional[str] = None,
+        meal_type: Optional[str] = None,
+        to_meal_type: Optional[str] = None,
+        recipe_name_or_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Move or reschedule a planned meal to another date or meal slot.
+        """
+        try:
+            from datetime import datetime as _dt
+            _dt.strptime(to_date, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            raise InvalidArgumentError(
+                f"Invalid destination date '{to_date}'. Use YYYY-MM-DD format (e.g. 2026-07-05)."
+            )
+
+        new_type_int = None
+        if to_meal_type:
+            tmt_clean = to_meal_type.lower().strip()
+            if tmt_clean not in MEAL_TYPE_MAP:
+                raise InvalidArgumentError(
+                    f"Unknown destination meal type '{to_meal_type}'. Use one of: {', '.join(MEAL_TYPE_MAP)}."
+                )
+            new_type_int = MEAL_TYPE_MAP[tmt_clean]
+
+        if not entry_id and not date:
+            raise InvalidArgumentError(
+                "Please provide either 'entry_id' or 'date' to identify the planned meal to move."
+            )
+
+        res = await self._make_authenticated_request("GET", "/sync/meals")
+        raw_meals = res.get("result", [])
+        active_meals = [m for m in raw_meals if not m.get("deleted", False)]
+
+        matched_meal = None
+        if entry_id:
+            for m in active_meals:
+                if m.get("uid") == entry_id:
+                    matched_meal = m
+                    break
+            if not matched_meal:
+                raise InvalidArgumentError(f"No active planned meal found with entry ID '{entry_id}'.")
+        else:
+            try:
+                from datetime import datetime as _dt
+                _dt.strptime(date, "%Y-%m-%d")
+            except (ValueError, TypeError):
+                raise InvalidArgumentError(
+                    f"Invalid source date '{date}'. Use YYYY-MM-DD format (e.g. 2026-07-05)."
+                )
+
+            candidates = [m for m in active_meals if (m.get("date") or "")[:10] == date]
+            if meal_type:
+                mt_clean = meal_type.lower().strip()
+                if mt_clean not in MEAL_TYPE_MAP:
+                    raise InvalidArgumentError(
+                        f"Unknown meal type '{meal_type}'. Use one of: {', '.join(MEAL_TYPE_MAP)}."
+                    )
+                type_int = MEAL_TYPE_MAP[mt_clean]
+                candidates = [m for m in candidates if m.get("type") == type_int]
+
+            if recipe_name_or_id:
+                r_query = recipe_name_or_id.lower().strip()
+                candidates = [
+                    m for m in candidates
+                    if m.get("recipe_uid") == recipe_name_or_id
+                    or r_query in (m.get("name") or "").lower()
+                ]
+
+            if not candidates:
+                descr = f"on {date}"
+                if meal_type:
+                    descr += f" ({meal_type})"
+                if recipe_name_or_id:
+                    descr += f" for '{recipe_name_or_id}'"
+                raise InvalidArgumentError(f"No active planned meal found {descr}.")
+
+            if len(candidates) > 1:
+                summary = ", ".join(
+                    f"'{m.get('name')}' (id: {m.get('uid')}, type: {INV_MEAL_TYPE_MAP.get(m.get('type', 2), 'dinner')})"
+                    for m in candidates
+                )
+                raise AmbiguousMatchError(
+                    f"Multiple planned meals found on {date}: {summary}. Please specify the entry_id or meal_type.",
+                    candidates=[
+                        {
+                            "entry_id": m.get("uid"),
+                            "name": m.get("name"),
+                            "meal_type": INV_MEAL_TYPE_MAP.get(m.get("type", 2), "dinner"),
+                        }
+                        for m in candidates
+                    ],
+                )
+
+            matched_meal = candidates[0]
+
+        matched_meal["date"] = f"{to_date} 00:00:00"
+        if new_type_int is not None:
+            matched_meal["type"] = new_type_int
+        matched_meal["deleted"] = False
+
+        gzipped_data = self._gzip_json([matched_meal])
+        data = aiohttp.FormData()
+        data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
+        await self._make_authenticated_request("POST", "/sync/meals", data=data)
+
+        final_type = INV_MEAL_TYPE_MAP.get(matched_meal.get("type", 2), "dinner")
+        logger.info(f"Moved planned meal {matched_meal.get('uid')} to {to_date} ({final_type})")
+
+        return {
+            "uid": matched_meal.get("uid"),
+            "name": matched_meal.get("name"),
+            "date": to_date,
+            "meal_type": final_type,
+            "recipe_uid": matched_meal.get("recipe_uid"),
+        }
+
+    async def update_grocery_item(
+        self,
+        item_name_or_id: str,
+        aisle: Optional[str] = None,
+        name: Optional[str] = None,
+        quantity: Optional[str] = None,
+        instruction: Optional[str] = None,
+        list_name_or_id: Optional[str] = None,
+        purchased: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """
+        Update an existing grocery item in Paprika (aisle, name, quantity, instruction, list, purchased).
+
+        Args:
+            item_name_or_id: UID or name of the grocery item to update.
+            aisle: New aisle/category name.
+            name: New display name.
+            quantity: New quantity string.
+            instruction: New instruction string.
+            list_name_or_id: Target grocery list to move the item to.
+            purchased: Mark purchased (True) or active (False).
+
+        Returns:
+            Dict of the updated item.
+        """
+        groceries = await self.get_groceries(include_purchased=True)
+        list_names = {
+            lst["uid"]: lst.get("name", "unknown list")
+            for lst in await self.get_grocery_lists()
+        }
+        item = self._resolve_strict(
+            item_name_or_id, groceries,
+            name_key="name", id_key="uid",
+            list_names=list_names,
+        )
+
+        if list_name_or_id:
+            target_list_uid = await self._resolve_list_uid_strict(list_name_or_id)
+            item["list_uid"] = target_list_uid
+        if name is not None:
+            item["name"] = name
+            item["ingredient"] = name
+        if aisle is not None:
+            item["aisle"] = aisle
+        if quantity is not None:
+            item["quantity"] = quantity
+        if instruction is not None:
+            item["instruction"] = instruction
+        if purchased is not None:
+            item["purchased"] = purchased
+
+        gzipped_data = self._gzip_json([item])
+        data = aiohttp.FormData()
+        data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
+        await self._make_authenticated_request("POST", "/sync/groceries", data=data)
+
+        if aisle and self._aisle_cache is not None:
+            self._aisle_cache[(item.get("name") or "").lower()] = aisle
+
+        logger.info(f"Updated grocery item: {item['uid']} ({item.get('name')})")
+        return {
+            "uid": item["uid"],
+            "name": item.get("name"),
+            "aisle": item.get("aisle"),
+            "quantity": item.get("quantity"),
+            "instruction": item.get("instruction"),
+            "list_uid": item.get("list_uid"),
+            "purchased": item.get("purchased"),
+        }
+
+    async def update_grocery_items(
+        self,
+        updates: List[Dict[str, Any]],
+        list_name_or_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Bulk update multiple grocery items in a single POST request.
+
+        Args:
+            updates: List of dicts, each specifying:
+                - ``item_name_or_id`` (or ``uid``/``name``): str
+                - ``aisle``: Optional[str]
+                - ``name``: Optional[str]
+                - ``quantity``: Optional[str]
+                - ``instruction``: Optional[str]
+                - ``purchased``: Optional[bool]
+                - ``list_name_or_id``: Optional[str]
+            list_name_or_id: Optional list name or UID applied to all updates that don't specify one.
+
+        Returns:
+            List of updated item dicts.
+        """
+        if not updates:
+            return []
+
+        groceries = await self.get_groceries(include_purchased=True)
+        list_names = {
+            lst["uid"]: lst.get("name", "unknown list")
+            for lst in await self.get_grocery_lists()
+        }
+
+        default_target_list_uid = None
+        if list_name_or_id:
+            default_target_list_uid = await self._resolve_list_uid_strict(list_name_or_id)
+
+        updated_items = []
+        results = []
+
+        for u in updates:
+            query = u.get("item_name_or_id") or u.get("uid") or u.get("name")
+            if not query:
+                continue
+            item = self._resolve_strict(
+                query, groceries,
+                name_key="name", id_key="uid",
+                list_names=list_names,
+            )
+
+            if u.get("list_name_or_id"):
+                item["list_uid"] = await self._resolve_list_uid_strict(u["list_name_or_id"])
+            elif default_target_list_uid:
+                item["list_uid"] = default_target_list_uid
+
+            if u.get("name") is not None:
+                item["name"] = u["name"]
+                item["ingredient"] = u["name"]
+            if u.get("aisle") is not None:
+                item["aisle"] = u["aisle"]
+            if u.get("quantity") is not None:
+                item["quantity"] = u["quantity"]
+            if u.get("instruction") is not None:
+                item["instruction"] = u["instruction"]
+            if u.get("purchased") is not None:
+                item["purchased"] = u["purchased"]
+
+            updated_items.append(item)
+            results.append({
+                "uid": item["uid"],
+                "name": item.get("name"),
+                "aisle": item.get("aisle"),
+                "quantity": item.get("quantity"),
+                "instruction": item.get("instruction"),
+                "list_uid": item.get("list_uid"),
+                "purchased": item.get("purchased"),
+            })
+
+            if item.get("aisle") and self._aisle_cache is not None:
+                self._aisle_cache[(item.get("name") or "").lower()] = item["aisle"]
+
+        if updated_items:
+            gzipped_data = self._gzip_json(updated_items)
+            data = aiohttp.FormData()
+            data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
+            await self._make_authenticated_request("POST", "/sync/groceries", data=data)
+            logger.info(f"Bulk updated {len(updated_items)} grocery items.")
+
+        return results
 
     async def close(self):
         """Close the HTTP session."""

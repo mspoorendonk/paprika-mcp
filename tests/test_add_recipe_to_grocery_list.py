@@ -68,7 +68,14 @@ def _patch_http(client: PaprikaClient, lists=None):
     if lists is None:
         lists = [DEFAULT_LIST]
 
+    recipe_index = [
+        {"uid": RECIPE_UID, "hash": "h1"},
+        {"uid": RECIPE_NO_INGREDIENTS["uid"], "hash": "h2"},
+    ]
+
     async def fake_request(method, path, **kwargs):
+        if method == "GET" and "sync/recipes" in path:
+            return {"result": recipe_index}
         if method == "GET" and "grocerylists" in path:
             return {"result": lists}
         if method == "POST" and "groceries" in path:
@@ -116,12 +123,12 @@ async def test_separate_false_on_all_items(client):
 
 
 @pytest.mark.asyncio
-async def test_aisle_empty_on_all_items(client):
-    """aisle must be empty string so Paprika can auto-assign."""
+async def test_aisle_assigned_on_all_items(client):
+    """aisle must be automatically assigned (never empty string) so items are categorized."""
     _patch_http(client)
     result = await client.add_recipe_to_grocery_list("Thai basil chicken")
     for item in result["items"]:
-        assert item["aisle"] == ""
+        assert item["aisle"] != "", f"Item '{item['name']}' has empty aisle"
 
 
 @pytest.mark.asyncio
@@ -130,6 +137,8 @@ async def test_single_bulk_post(client):
     post_calls = []
 
     async def fake_request(method, path, **kwargs):
+        if method == "GET" and "sync/recipes" in path:
+            return {"result": [{"uid": RECIPE_UID, "hash": "h1"}]}
         if method == "GET" and "grocerylists" in path:
             return {"result": [DEFAULT_LIST]}
         if method == "POST":

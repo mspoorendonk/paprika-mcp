@@ -201,11 +201,15 @@ Remove choco from my grocery list.
 | `update_recipe_partial` | Update only specified fields |
 | `list_recipes` | List all recipes with ingredients and details. Served from a hash-validated in-memory cache so repeated calls are fast and stay under Paprika's per-IP rate limit (see `specs.md` → "Recipe cache"). The cache is warmed in the background at server startup. |
 | `get_groceries` | List unchecked grocery items on the Paprika grocery list (set `include_purchased=true` to include checked items) |
-| `add_grocery_item` | Add a new item to the Paprika grocery list |
+| `add_grocery_item` | Add a new item to the Paprika grocery list. Automatically assigns an appropriate aisle/category (based on user history and keywords) so items are never uncategorized. |
+| `update_grocery_item` | Update properties of an existing grocery item (aisle/category, name, quantity, instruction, list, or purchased status) |
+| `update_grocery_items` | Bulk update multiple grocery items in a single request (e.g. batch re-assigning aisles) |
 | `remove_grocery_item` | Remove an item from Paprika groceries. Searches all lists by default; strict matching (exact UID, exact name, or unambiguous substring). Returns the removed item's name, UID, and list UID. Ambiguous matches return an error listing candidates. |
-| `add_recipes_to_grocery_list` | Add all ingredients from one or more recipes to the grocery list in a single bulk request |
-| `plan_meals` | Schedule one or more recipes on the Paprika meal planner for specific dates and meal types |
-| `get_plan` | View meals in the Paprika meal planner across past days (default 30 days back) and upcoming days (default 14 days ahead) |
+| `add_recipes_to_grocery_list` | Add all ingredients from one or more recipes to the grocery list in a single bulk request, with automatic aisle assignment per ingredient |
+| `plan_meals` | Schedule one or more recipes on the Paprika meal planner for specific dates and meal types (uses strict matching to prevent scheduling incorrect recipes) |
+| `get_plan` | View meals in the Paprika meal planner across past days (default 30 days back) and upcoming days (default 14 days ahead). Includes entry IDs (`[id: <uid>]`) for easy deletion or rescheduling. |
+| `delete_planned_meal` | Remove a planned meal from the Paprika meal planner by entry ID or date (+ optional meal slot/recipe) |
+| `move_planned_meal` | Move or reschedule a planned meal to another date or meal slot |
 | `GetUsageStats` | Usage aggregates from the audit log: calls per client, per tool, per day, error rate, and last-seen per client |
 
 ### Error contract

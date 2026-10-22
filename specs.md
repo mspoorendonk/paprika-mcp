@@ -131,7 +131,7 @@ The scenarios below show the expected flow: user utterance → tool call(s) the 
 - **Errors**: Uses the same error codes as other tools — `recipe_not_found` if the recipe cannot be resolved, `grocery_list_not_found` if the list name doesn't exist, plus the standard connectivity codes.
 - **Recipe linking**: Every grocery item must have `recipe_uid` set to the recipe's UID, and `recipe` set to the recipe name. The Paprika app uses both to group the items under the recipe name in the shopping view.
 - **Bulk POST**: All ingredients are sent in a **single POST** to `/sync/groceries/` as a JSON array (gzip-compressed multipart). This is more efficient than one call per item and matches how the official app adds a recipe to the shopping list.
-- **`aisle` field**: Always sent as empty string — Paprika auto-assigns the aisle based on the `ingredient` value.
+- **`aisle` field**: Automatically assigned based on historical groceries in the user's account and keyword classification, falling back to `"Miscellaneous"` so items are never uncategorized.
 - **`separate` field**: Set to `false` for all items (matches the official app behaviour; `true` would visually separate the item from others in the same aisle).
 - **Ingredient parsing**: Each non-empty, non-whitespace line of the recipe's `ingredients` field becomes one grocery item. The full line is used as both `name` and `ingredient`; `quantity` is left empty (the quantity is embedded in the ingredient line as Paprika stores it).
 
@@ -271,9 +271,31 @@ Catch-all for any other non-2xx Paprika response (e.g. 5xx, malformed JSON). The
 - **Parameters**:
   - `days_back` (optional, default `30`, min `0`, max `365`) — Number of past days to look back for meals eaten.
   - `days_ahead` (optional, default `14`, min `0`, max `365`) — Number of future days to look ahead for planned meals.
-- **Returns**: Plain-text overview split into past meals and upcoming meals, with day of the week, meal type, and recipe names.
+- **Returns**: Plain-text overview split into past meals and upcoming meals, with day of the week, meal type, recipe names, and entry IDs (`[id: <uid>]`).
 - **Errors**: Standard connectivity codes.
 - **API**: Queries `GET /v2/sync/meals/`.
+
+### Scenario 13 — Deleting or moving a planned meal
+
+> **User:** "Remove dinner on Friday."
+
+- LLM calls `delete_planned_meal` with `date="2026-10-23"`, `meal_type="dinner"`.
+- Server marks the matching meal entry as `deleted=true` and syncs.
+- **Assistant:** "Deleted planned meal *Pasta* on Friday the 23rd."
+
+> **User:** "Actually, move tonight's dinner to tomorrow."
+
+- LLM calls `move_planned_meal` with `date="2026-10-22"`, `meal_type="dinner"`, `to_date="2026-10-23"`.
+- Server updates the meal's `date` and syncs.
+- **Assistant:** "Moved planned meal *Kipfilet* to tomorrow."
+
+### Scenario 14 — Updating existing grocery items
+
+> **User:** "Move the eggs into Dairy."
+
+- LLM calls `update_grocery_item` with `item_name_or_id="eggs"`, `aisle="Dairy"`.
+- Server strictly matches the item and syncs the updated aisle.
+- **Assistant:** "Updated *eggs* to aisle *Dairy*."
 
 
 ## MCP Client Requirements & Transport Protocols

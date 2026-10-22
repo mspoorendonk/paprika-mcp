@@ -416,6 +416,89 @@ async def add_recipes_to_grocery_list(
     )
 
 
+class GroceryUpdate(BaseModel):
+    item_name_or_id: str = Field(description="UID or name of the grocery item to update.")
+    aisle: Optional[str] = Field(default=None, description="New aisle / supermarket category.")
+    name: Optional[str] = Field(default=None, description="New name or ingredient line.")
+    quantity: Optional[str] = Field(default=None, description="New quantity string.")
+    instruction: Optional[str] = Field(default=None, description="New instruction note.")
+    purchased: Optional[bool] = Field(default=None, description="Purchased / checked status.")
+    list_name_or_id: Optional[str] = Field(default=None, description="Target list to move item to.")
+
+
+@mcp.tool()
+@audit.audited("update_grocery_item")
+@_tool_errors
+async def update_grocery_item(
+    item_name_or_id: Annotated[str, Field(
+        description="The UID or name of the grocery item to update (exact UID, "
+                    "exact name, or unambiguous substring).",
+    )],
+    aisle: Annotated[Optional[str], Field(
+        description="New aisle / supermarket section name (e.g. 'Produce', 'Dairy', 'Meat', 'Bakery', 'Snacks', etc.).",
+    )] = None,
+    name: Annotated[Optional[str], Field(
+        description="New display name or ingredient line for the grocery item.",
+    )] = None,
+    quantity: Annotated[Optional[str], Field(
+        description="New quantity string (e.g. '500g', '2 stuks').",
+    )] = None,
+    instruction: Annotated[Optional[str], Field(
+        description="New instruction note for the item.",
+    )] = None,
+    list_name_or_id: Annotated[Optional[str], Field(
+        description="Target grocery list name or UID to move the item to.",
+    )] = None,
+    purchased: Annotated[Optional[bool], Field(
+        description="Set to true to mark purchased/checked, or false to put back on the active list.",
+    )] = None,
+) -> str:
+    """Update properties of an existing grocery item (such as aisle/category, name, quantity, or list).
+
+    Use this tool whenever the user or assistant wants to re-categorize a grocery item into a specific aisle
+    ("Move eggs to Dairy", "Change aisle of apples to Produce"), rename an item, or update quantities.
+    """
+    res = await _client_or_raise().update_grocery_item(
+        item_name_or_id=item_name_or_id,
+        aisle=aisle,
+        name=name,
+        quantity=quantity,
+        instruction=instruction,
+        list_name_or_id=list_name_or_id,
+        purchased=purchased,
+    )
+    details = []
+    if res.get("aisle"):
+        details.append(f"aisle: {res['aisle']}")
+    if res.get("quantity"):
+        details.append(f"quantity: {res['quantity']}")
+    detail_str = f" ({', '.join(details)})" if details else ""
+    return f"Updated '{res['name']}' (UID {res['uid']}){detail_str} on list {res['list_uid']}."
+
+
+@mcp.tool()
+@audit.audited("update_grocery_items")
+@_tool_errors
+async def update_grocery_items(
+    updates: Annotated[list[GroceryUpdate], Field(
+        description="List of grocery updates to apply in a single batch.",
+    )],
+    list_name_or_id: Annotated[Optional[str], Field(
+        description="Default target list name or UID for items that do not specify one.",
+    )] = None,
+) -> str:
+    """Batch-update multiple grocery items in a single request (e.g. assigning aisles in bulk).
+
+    Use this tool when multiple items need category/aisle or quantity adjustments at once.
+    """
+    raw_updates = [u.model_dump(exclude_unset=True) for u in updates]
+    results = await _client_or_raise().update_grocery_items(
+        updates=raw_updates,
+        list_name_or_id=list_name_or_id,
+    )
+    return f"Updated {len(results)} grocery items in bulk."
+
+
 class MealRequest(BaseModel):
     recipe_name_or_id: str = Field(
         description="Name or UID of the recipe to schedule."
@@ -499,13 +582,14 @@ async def get_plan(
 
     for m in meals:
         m_date_str = m["date"]
+        uid_str = f" [id: {m['uid']}]" if m.get("uid") else ""
         try:
             m_date = datetime.strptime(m_date_str, "%Y-%m-%d").date()
             weekday = m_date.strftime("%A")
-            line = f"- {m_date_str} ({weekday}, {m['meal_type']}): {m['name']}"
+            line = f"- {m_date_str} ({weekday}, {m['meal_type']}): {m['name']}{uid_str}"
         except Exception:
             m_date = today
-            line = f"- {m_date_str} ({m['meal_type']}): {m['name']}"
+            line = f"- {m_date_str} ({m['meal_type']}): {m['name']}{uid_str}"
 
         if m_date < today:
             past_lines.append(line)
@@ -521,6 +605,78 @@ async def get_plan(
         sections.append(f"\nUpcoming / today's meals (next {days_ahead} days):\n" + "\n".join(upcoming_lines))
 
     return "\n".join(sections)
+
+
+@mcp.tool()
+@audit.audited("delete_planned_meal")
+@_tool_errors
+async def delete_planned_meal(
+    entry_id: Annotated[Optional[str], Field(
+        description="The entry UID of the planned meal to delete (as shown in '[id: <uid>]' by get_plan). "
+                    "Preferred when known, as it identifies the exact entry unambiguously.",
+    )] = None,
+    date: Annotated[Optional[str], Field(
+        description="Date in YYYY-MM-DD format (e.g. '2026-10-22') to locate the planned meal when entry_id is not known.",
+    )] = None,
+    meal_type: Annotated[Optional[str], Field(
+        description="Optional meal slot ('breakfast', 'lunch', 'dinner', 'snack') to disambiguate when multiple meals are planned on the same date.",
+    )] = None,
+    recipe_name_or_id: Annotated[Optional[str], Field(
+        description="Optional recipe name or UID to disambiguate when multiple meals are planned on the same date.",
+    )] = None,
+) -> str:
+    """Remove a planned meal from the Paprika meal planner.
+
+    Use this tool whenever the user wants to delete, cancel, or clear a planned meal
+    ("Remove dinner on Friday", "Cancel the curry on Sunday", "Delete this meal plan entry").
+    You can specify either the `entry_id` (from `get_plan`) or the `date` (plus optional `meal_type` or `recipe_name_or_id`).
+    """
+    res = await _client_or_raise().delete_planned_meal(
+        entry_id=entry_id,
+        date=date,
+        meal_type=meal_type,
+        recipe_name_or_id=recipe_name_or_id,
+    )
+    return f"Deleted planned meal '{res['name']}' ({res['meal_type']}) on {res['date']} (entry ID: {res['uid']})."
+
+
+@mcp.tool()
+@audit.audited("move_planned_meal")
+@_tool_errors
+async def move_planned_meal(
+    to_date: Annotated[str, Field(
+        description="Target destination date in YYYY-MM-DD format (e.g. '2026-10-25').",
+    )],
+    to_meal_type: Annotated[Optional[str], Field(
+        description="Optional new meal slot ('breakfast', 'lunch', 'dinner', 'snack'). Defaults to keeping the current meal type.",
+    )] = None,
+    entry_id: Annotated[Optional[str], Field(
+        description="The entry UID of the planned meal to move (from get_plan).",
+    )] = None,
+    date: Annotated[Optional[str], Field(
+        description="Current date in YYYY-MM-DD format to locate the meal if entry_id is not known.",
+    )] = None,
+    meal_type: Annotated[Optional[str], Field(
+        description="Current meal slot ('breakfast', 'lunch', 'dinner', 'snack') to disambiguate if entry_id is not known.",
+    )] = None,
+    recipe_name_or_id: Annotated[Optional[str], Field(
+        description="Optional recipe name or UID to disambiguate if entry_id is not known.",
+    )] = None,
+) -> str:
+    """Move or reschedule a planned meal to another date or meal slot.
+
+    Use this tool when the user wants to reschedule or swap meals
+    ("Move Friday's dinner to Saturday", "Postpone tonight's pasta to tomorrow").
+    """
+    res = await _client_or_raise().move_planned_meal(
+        to_date=to_date,
+        to_meal_type=to_meal_type,
+        entry_id=entry_id,
+        date=date,
+        meal_type=meal_type,
+        recipe_name_or_id=recipe_name_or_id,
+    )
+    return f"Moved planned meal '{res['name']}' to {res['date']} as {res['meal_type']} (entry ID: {res['uid']})."
 
 
 @mcp.tool()
