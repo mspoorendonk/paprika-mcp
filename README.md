@@ -46,10 +46,9 @@ cd paprika-mcp
 # Install uv (if you don't have it already)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Create virtual environment and install dependencies using uv
-uv venv .venv
+# Create the virtual environment (Python 3.12) and install the locked dependencies
+uv sync --extra dev
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-uv pip install -e .
 ```
 
 ### 2. Configuration
