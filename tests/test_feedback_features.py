@@ -118,7 +118,8 @@ async def test_get_plan_server_includes_entry_ids(client):
             "uid": "MEAL-UID-12345",
             "recipe_uid": "REC-1",
             "name": "Kip Kerrie",
-            "date": "2026-10-22 00:00:00",
+            # server.get_plan uses date.today(), so keep this inside the window.
+            "date": date.today().strftime("%Y-%m-%d 00:00:00"),
             "type": 2,
             "deleted": False,
             "order_flag": 0,

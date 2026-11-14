@@ -1,5 +1,5 @@
 """Unit tests for the get_plan (meal planner history and calendar) tool and client method."""
-from datetime import date
+from datetime import date, datetime
 import pytest
 from unittest.mock import AsyncMock, patch
 
@@ -147,8 +147,15 @@ async def test_get_plan_negative_days_raises(client):
 @pytest.mark.asyncio
 async def test_get_plan_server_tool_formatting(client):
     """server.get_plan formats plain text with past and upcoming sections."""
-    client._make_authenticated_request = AsyncMock(return_value={"result": MOCK_MEALS})
-    
+    # The server tool uses date.today(), so shift the fixtures (anchored on
+    # 2026-10-03) to today while keeping their relative spacing.
+    offset = date.today() - date(2026, 10, 3)
+    shifted = [
+        {**m, "date": (datetime.strptime(m["date"], "%Y-%m-%d %H:%M:%S") + offset).strftime("%Y-%m-%d %H:%M:%S")}
+        for m in MOCK_MEALS
+    ]
+    client._make_authenticated_request = AsyncMock(return_value={"result": shifted})
+
     with patch("src.server._client_or_raise", return_value=client):
         # Call tool directly
         output = await server.get_plan(days_back=30, days_ahead=14)
